@@ -276,6 +276,26 @@ console.log('4. Read-only setting variants');
 	await client.stop();
 }
 
+console.log('4b. Settings under the names Claude Code uses for plugin options');
+{
+	const options = { CLAUDE_PLUGIN_OPTION_PMITZ_BASE_URL: BASE, CLAUDE_PLUGIN_OPTION_PMITZ_API_KEY: KEY };
+	let client = new Client({ ...options, CLAUDE_PLUGIN_OPTION_PMITZ_READ_ONLY: '${user_config.pmitz_read_only}' });
+	await client.start();
+	const status = await client.call('pmitz_connection_status');
+	check('plugin option names: reachable, not read-only', status.data.reachable === true && status.data.readOnly === false);
+	check('plugin option names: all tools on', (await client.tools()).length === 11);
+	await client.stop();
+	client = new Client({ ...options, CLAUDE_PLUGIN_OPTION_PMITZ_READ_ONLY: 'true' });
+	await client.start();
+	check('plugin option names: read-only mode', (await client.tools()).length === 5);
+	await client.stop();
+	client = new Client({ ...options, PMITZ_BASE_URL: 'http://127.0.0.1:9' });
+	await client.start();
+	const direct = await client.call('pmitz_connection_status');
+	check('the plain setting name wins over the plugin option name', direct.data.reachable === false);
+	await client.stop();
+}
+
 console.log('5. Wrong API key and unreachable server');
 {
 	const wrongKey = new Client({ PMITZ_BASE_URL: BASE, PMITZ_API_KEY: 'wrong-key-' + suffix });

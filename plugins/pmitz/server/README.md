@@ -3,8 +3,8 @@
 A local MCP server that lets a coding assistant read and change your own [Pmitz](https://github.com/terpomo-io/pmitz) server through its REST API. It needs Node.js 18 or newer and has no dependencies.
 
 ```bash
-codex mcp add pmitz-local -- npx -y @terpomosoft/pmitz-mcp@0.1.1
-claude mcp add pmitz-local -- npx -y @terpomosoft/pmitz-mcp@0.1.1
+codex mcp add pmitz-local -- npx -y @terpomosoft/pmitz-mcp@0.1.2
+claude mcp add pmitz-local -- npx -y @terpomosoft/pmitz-mcp@0.1.2
 ```
 
 Set these in the environment the assistant starts from:

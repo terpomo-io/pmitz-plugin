@@ -53,9 +53,9 @@
         "${CLAUDE_PLUGIN_ROOT}/server/pmitz-mcp.mjs"
       ],
       "env": {
-        "PMITZ_BASE_URL": "${user_config.pmitz_base_url}",
-        "PMITZ_API_KEY": "${user_config.pmitz_api_key}",
-        "PMITZ_MCP_READ_ONLY": "${user_config.pmitz_read_only}"
+        "CLAUDE_PLUGIN_OPTION_PMITZ_BASE_URL": "${user_config.pmitz_base_url}",
+        "CLAUDE_PLUGIN_OPTION_PMITZ_API_KEY": "${user_config.pmitz_api_key}",
+        "CLAUDE_PLUGIN_OPTION_PMITZ_READ_ONLY": "${user_config.pmitz_read_only}"
       }
     },
     "pmitz-sandbox": {

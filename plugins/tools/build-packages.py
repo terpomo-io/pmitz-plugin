@@ -63,11 +63,12 @@ build(f'pmitz-marketplace-{version}.zip', marketplace + [('pmitz-marketplace/plu
 manifest = json.loads((plugin / '.codex-plugin' / 'plugin.json').read_text())
 # The hosted MCP works without local execution, so the directory package is not desktop-only.
 manifest.pop('requires_local_executor', None)
+manifest['mcpServers'] = './.mcp.json'
 if args.demo_url:
     manifest['extensions']['com.openai']['review']['demo_recording_url'] = args.demo_url
 
 # Only the hosted MCP: OpenAI's directory refuses a command (stdio) MCP server.
-mcp = json.loads((plugin / '.mcp.json').read_text())
+mcp = json.loads((plugin / 'codex-mcp.json').read_text())
 mcp = {'mcpServers': {'pmitz-sandbox': {'url': mcp['mcpServers']['pmitz-sandbox']['url']}}}
 
 readme = (plugin / 'README.md').read_text()
@@ -98,8 +99,8 @@ for arcname, data in full:
         continue
     if arcname == '.codex-plugin/plugin.json':
         data = (json.dumps(manifest, indent=2) + '\n').encode()
-    if arcname == '.mcp.json':
-        data = (json.dumps(mcp, indent=2) + '\n').encode()
+    if arcname == 'codex-mcp.json':
+        arcname, data = '.mcp.json', (json.dumps(mcp, indent=2) + '\n').encode()
     if arcname == 'README.md':
         data = readme.encode()
     if arcname == 'skills/pmitz/SKILL.md':

@@ -10,13 +10,16 @@
 //   PMITZ_BASE_URL       Base URL of the Pmitz server, for example http://127.0.0.1:8080
 //   PMITZ_API_KEY        API key of that server. Sent only in the X-Api-Key header to PMITZ_BASE_URL.
 //   PMITZ_MCP_READ_ONLY  Optional. Set to "true" to offer only the tools that read.
+//
+// As a plugin option in Claude Code, the same settings arrive as CLAUDE_PLUGIN_OPTION_PMITZ_BASE_URL,
+// CLAUDE_PLUGIN_OPTION_PMITZ_API_KEY and CLAUDE_PLUGIN_OPTION_PMITZ_READ_ONLY.
 
 import { realpathSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
 const SERVER_NAME = 'pmitz';
-const SERVER_VERSION = '0.1.1';
+const SERVER_VERSION = '0.1.2';
 const SUPPORTED_PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const REQUEST_TIMEOUT_MS = 15000;
 const GROUP_TYPES = ['subscriptions', 'users', 'directory-groups'];
@@ -27,10 +30,22 @@ const SUBSCRIPTION_STATUSES = ['TRIAL', 'TRIAL_ENDED', 'PENDING', 'ACTIVE', 'SUS
 // Configuration
 // ---------------------------------------------------------------------------------------------
 
+// Each setting has a second name, the one Claude Code uses for a plugin option.
+const PLUGIN_OPTION_NAMES = {
+	PMITZ_BASE_URL: 'CLAUDE_PLUGIN_OPTION_PMITZ_BASE_URL',
+	PMITZ_API_KEY: 'CLAUDE_PLUGIN_OPTION_PMITZ_API_KEY',
+	PMITZ_MCP_READ_ONLY: 'CLAUDE_PLUGIN_OPTION_PMITZ_READ_ONLY',
+};
+
 function readSetting(name) {
-	const value = (process.env[name] ?? '').trim();
-	// A host that did not fill in a placeholder passes it through literally; treat that as unset.
-	return value.startsWith('${') ? '' : value;
+	for (const variable of [name, PLUGIN_OPTION_NAMES[name]]) {
+		const value = (process.env[variable] ?? '').trim();
+		// A host that did not fill in a placeholder passes it through literally; treat that as unset.
+		if (value && !value.startsWith('${')) {
+			return value;
+		}
+	}
+	return '';
 }
 
 function normalizeBaseUrl(value) {

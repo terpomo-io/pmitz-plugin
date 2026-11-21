@@ -9,7 +9,7 @@
   },
   "license": "Apache-2.0",
   "skills": "./skills/",
-  "mcpServers": "./.mcp.json",
+  "mcpServers": "./codex-mcp.json",
   "requires_local_executor": true,
   "interface": {
     "displayName": "Pmitz",
