@@ -4,7 +4,7 @@ The service behind `https://pmitz-mcp.web.app`. It gives an AI assistant a Pmitz
 
 ## What it does
 
-- **`POST /mcp`** is an MCP server over Streamable HTTP, with no sign-in. `pmitz_create_sandbox` creates a sandbox and returns its key. The other Pmitz tools are the ones of the local MCP server in [`plugins/pmitz/server/pmitz-mcp.mjs`](../plugins/pmitz/server/pmitz-mcp.mjs), with the sandbox key added, plus `pmitz_sandbox_status` and `pmitz_export_plans`.
+- **`POST /mcp`** is an MCP server over Streamable HTTP, with no sign-in. `pmitz_create_sandbox` creates a sandbox and returns its key. The other Pmitz tools are the ones of the local MCP server in [`mcp-server/pmitz-mcp.mjs`](../mcp-server/pmitz-mcp.mjs), with the sandbox key added, plus `pmitz_sandbox_status` and `pmitz_export_plans`.
 - **`/sandbox/<id>/...`** is the Pmitz REST API of one sandbox, for the developer's application. The sandbox key goes in the `X-Api-Key` header.
 - A sandbox is deleted 72 hours after it is created. It is for development and testing, not for production.
 

@@ -3,9 +3,8 @@
 
   pmitz-plugin-<version>.zip       the plugin folder as it is in the repository
   pmitz-marketplace-<version>.zip  the plugin plus both marketplace files, for a local install
-  pmitz-openai-<version>.zip       upload for OpenAI's directory: the skill and the hosted MCP. OpenAI's
-                                   directory refuses a command (stdio) MCP server, so the local MCP server
-                                   and the text describing it are left out.
+  pmitz-openai-<version>.zip       upload for OpenAI's directory: the plugin without Claude's manifest, with
+                                   the review material OpenAI reads from the Codex manifest.
 
 Run from anywhere: python3 plugins/tools/build-packages.py [--demo-url URL]
 
@@ -66,23 +65,9 @@ manifest.pop('requires_local_executor', None)
 if args.demo_url:
     manifest['extensions']['com.openai']['review']['demo_recording_url'] = args.demo_url
 
-# Only the hosted MCP: OpenAI's directory refuses a command (stdio) MCP server.
+# OpenAI's directory takes the MCP server as a bare URL.
 mcp = json.loads((plugin / '.mcp.json').read_text())
 mcp = {'mcpServers': {'pmitz-sandbox': {'url': mcp['mcpServers']['pmitz-sandbox']['url']}}}
-
-readme = (plugin / 'README.md').read_text()
-readme = replace_once(readme, 'and two MCP servers: `pmitz-sandbox`, which creates a Pmitz sandbox in Terpomo\'s cloud, and `pmitz-local`, which works on your own Pmitz server.',
-                      'and the `pmitz-sandbox` MCP server, which creates a Pmitz sandbox in Terpomo\'s cloud.')
-readme, count = re.subn(r'## Your own server: the local MCP server\n.*?(?=## What the plugin needs)', '', readme, flags=re.S)
-assert count == 1
-readme = replace_once(readme, 'The other tools are the ones of the local MCP server, with that key added, plus `pmitz_sandbox_status` and `pmitz_export_plans`.',
-                      'The other tools check access and limits, manage products and subscriptions, record usage, and export the plans.')
-readme = replace_once(readme, 'and the two MCP servers described above.', 'and the MCP server described above.')
-readme, count = re.subn(r'The local MCP server runs as a Node\.js process.*?\n\n', '', readme, flags=re.S)
-assert count == 1
-readme = replace_once(readme, 'Node.js 22 for the Node example, and Node.js 18 or newer for the local MCP server.',
-                      'and Node.js 22 for the Node example.')
-assert 'connector' not in readme.lower(), [l for l in readme.splitlines() if 'connector' in l.lower()]
 
 skill = (plugin / 'skills' / 'pmitz' / 'SKILL.md').read_text()
 skill, count = re.subn(
@@ -94,14 +79,12 @@ assert 'connector' not in skill.lower() and 'pmitz_connection_status' not in ski
 
 openai = []
 for arcname, data in full:
-    if arcname.startswith(('.claude-plugin/', 'server/')):
+    if arcname.startswith('.claude-plugin/'):
         continue
     if arcname == '.codex-plugin/plugin.json':
         data = (json.dumps(manifest, indent=2) + '\n').encode()
     if arcname == '.mcp.json':
         data = (json.dumps(mcp, indent=2) + '\n').encode()
-    if arcname == 'README.md':
-        data = readme.encode()
     if arcname == 'skills/pmitz/SKILL.md':
         data = skill.encode()
     openai.append((arcname, data))

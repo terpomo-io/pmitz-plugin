@@ -6,7 +6,7 @@ WORKDIR /app/hosted-mcp
 COPY hosted-mcp/package.json hosted-mcp/package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
 COPY hosted-mcp/server.mjs ./
-COPY plugins/pmitz/server/pmitz-mcp.mjs /app/plugins/pmitz/server/pmitz-mcp.mjs
+COPY mcp-server/pmitz-mcp.mjs /app/mcp-server/pmitz-mcp.mjs
 USER node
 EXPOSE 8090
 CMD ["node", "server.mjs"]

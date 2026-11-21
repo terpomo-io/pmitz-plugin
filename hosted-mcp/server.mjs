@@ -6,7 +6,7 @@
 //
 // Three ways in, all on the same data:
 //   POST /mcp          MCP over Streamable HTTP, stateless, no sign-in. The Pmitz tools are the ones of
-//                      the local MCP server (plugins/pmitz/server/pmitz-mcp.mjs), with a sandbox key.
+//                      the local MCP server (mcp-server/pmitz-mcp.mjs), with a sandbox key.
 //   /sandbox/<id>/...        The Pmitz REST API of one sandbox, for the developer's application.
 //                      Authenticate with the sandbox key in the X-Api-Key header.
 //   GET /              A short page that says what this is.
@@ -24,7 +24,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
 import pg from 'pg';
 
-import { createToolset, ToolError, SERVER_VERSION, GROUP_TYPES } from '../plugins/pmitz/server/pmitz-mcp.mjs';
+import { createToolset, ToolError, SERVER_VERSION, GROUP_TYPES } from '../mcp-server/pmitz-mcp.mjs';
 
 const settings = {
 	pmitzUrl: (process.env.PMITZ_INTERNAL_URL ?? 'http://127.0.0.1:8080').replace(/\/+$/, ''),
