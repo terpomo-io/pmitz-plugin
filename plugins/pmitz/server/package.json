@@ -10,7 +10,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/terpomo-io/pmitz-plugin.git",
-    "directory": "mcp-server"
+    "directory": "plugins/pmitz/server"
   },
   "type": "module",
   "bin": {

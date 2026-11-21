@@ -1,4 +1,4 @@
-// End-to-end test of the local Pmitz MCP server (mcp-server/pmitz-mcp.mjs) against a running Pmitz server.
+// End-to-end test of the local Pmitz MCP server (plugins/pmitz/server/pmitz-mcp.mjs) against a running Pmitz server.
 //
 // Usage:
 //   PMITZ_BASE_URL=http://127.0.0.1:8080 PMITZ_API_KEY=... node plugins/tools/local-mcp-test.mjs
@@ -10,7 +10,7 @@ import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-const serverFile = process.argv[2] ?? fileURLToPath(new URL('../../mcp-server/pmitz-mcp.mjs', import.meta.url));
+const serverFile = process.argv[2] ?? fileURLToPath(new URL('../pmitz/server/pmitz-mcp.mjs', import.meta.url));
 const BASE = process.env.PMITZ_BASE_URL;
 const KEY = process.env.PMITZ_API_KEY;
 if (!serverFile || !BASE || !KEY) {
