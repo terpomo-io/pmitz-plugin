@@ -1,0 +1,16 @@
+{
+  "displayName": "Pmitz sandbox server is refusing many requests",
+  "documentation": {"content": "More than 200 requests were refused by a limit within five minutes. That is what an abuse attempt or a runaway client looks like. See the usage log: jsonPayload.usage.event=\"rate_limited\".", "mimeType": "text/markdown"},
+  "combiner": "OR",
+  "conditions": [{
+    "displayName": "Refusals over 200 in 5 minutes",
+    "conditionThreshold": {
+      "filter": "metric.type=\"logging.googleapis.com/user/pmitz_rate_limited\" AND resource.type=\"cloud_run_revision\"",
+      "aggregations": [{"alignmentPeriod": "300s", "perSeriesAligner": "ALIGN_SUM", "crossSeriesReducer": "REDUCE_SUM"}],
+      "comparison": "COMPARISON_GT", "thresholdValue": 200, "duration": "0s",
+      "trigger": {"count": 1}
+    }
+  }],
+  "notificationChannels": ["projects/terpomo-pmitz-mcp/notificationChannels/11034162506586188963"],
+  "alertStrategy": {"autoClose": "1800s"}
+}

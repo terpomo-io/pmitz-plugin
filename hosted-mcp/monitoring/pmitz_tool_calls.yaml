@@ -1,0 +1,17 @@
+description: "Pmitz sandbox tool calls"
+filter: 'resource.type="cloud_run_revision" AND resource.labels.service_name="pmitz-mcp" AND jsonPayload.usage.event="tool_call"'
+metricDescriptor:
+  metricKind: DELTA
+  valueType: INT64
+  unit: '1'
+  labels:
+  - key: tool
+    valueType: STRING
+  - key: client
+    valueType: STRING
+  - key: outcome
+    valueType: STRING
+labelExtractors:
+  tool: EXTRACT(jsonPayload.usage.tool)
+  client: EXTRACT(jsonPayload.usage.client)
+  outcome: EXTRACT(jsonPayload.usage.outcome)

@@ -1,0 +1,11 @@
+description: "MCP connections to the Pmitz sandbox service"
+filter: 'resource.type="cloud_run_revision" AND resource.labels.service_name="pmitz-mcp" AND jsonPayload.usage.event="mcp_connect"'
+metricDescriptor:
+  metricKind: DELTA
+  valueType: INT64
+  unit: '1'
+  labels:
+  - key: client
+    valueType: STRING
+labelExtractors:
+  client: EXTRACT(jsonPayload.usage.client)

@@ -57,6 +57,21 @@ gcloud logging read 'resource.labels.service_name="pmitz-mcp" AND jsonPayload.us
   --project terpomo-pmitz-mcp --freshness 7d --format 'value(timestamp, jsonPayload.usage.client, jsonPayload.usage.caller)'
 ```
 
+## Monitoring
+
+Set up in the Google Cloud project `terpomo-pmitz-mcp`, from the files in [`monitoring/`](monitoring):
+
+- **Health check.** `Pmitz sandbox server` calls `https://pmitz-mcp.web.app/health` every minute from several regions.
+- **Alerts**, sent by email: `alert-down.json` when the health check fails from more than one region for two minutes, and `alert-abuse.json` when more than 200 requests are refused by a limit within five minutes.
+- **Counters** built from the usage log, one file each: `pmitz_sandboxes_created`, `pmitz_mcp_connects`, `pmitz_tool_calls`, `pmitz_rest_calls` and `pmitz_rate_limited`.
+- **Dashboard** `Pmitz sandbox service` (`dashboard.json`): the counters by assistant, tool and outcome, all requests by response class, response time and the health check.
+
+To recreate them: `gcloud logging metrics create NAME --config-from-file monitoring/NAME.yaml`, `gcloud alpha monitoring policies create --policy-from-file monitoring/alert-down.json`, and `gcloud monitoring dashboards create --config-from-file monitoring/dashboard.json`.
+
+The number of distinct callers is not a counter. Read it from the usage log, for example the distinct `caller` values of `sandbox_created` for one day.
+
+A caller's address is taken from the first entry of `X-Forwarded-For`. Through `pmitz-mcp.web.app` that entry is set by Firebase Hosting and a caller cannot change it. Through the service's own `run.app` address a caller can send any value, so there the limit per address can be evaded; the limit on new sandboxes per hour for the whole service still applies.
+
 ## Deployment
 
 It runs in the Google Cloud project `terpomo-pmitz-mcp` of the terpomosoft.com organization:

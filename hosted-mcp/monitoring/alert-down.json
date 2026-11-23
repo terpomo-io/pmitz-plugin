@@ -1,0 +1,16 @@
+{
+  "displayName": "Pmitz sandbox server is down",
+  "documentation": {"content": "The check of https://pmitz-mcp.web.app/health failed from more than one region for two minutes. Cloud Run service pmitz-mcp, project terpomo-pmitz-mcp.", "mimeType": "text/markdown"},
+  "combiner": "OR",
+  "conditions": [{
+    "displayName": "Health check failing",
+    "conditionThreshold": {
+      "filter": "metric.type=\"monitoring.googleapis.com/uptime_check/check_passed\" AND metric.label.check_id=\"pmitz-sandbox-server-JwiUxoDYc2Y\" AND resource.type=\"uptime_url\"",
+      "aggregations": [{"alignmentPeriod": "300s", "perSeriesAligner": "ALIGN_NEXT_OLDER", "crossSeriesReducer": "REDUCE_COUNT_FALSE", "groupByFields": ["resource.label.host"]}],
+      "comparison": "COMPARISON_GT", "thresholdValue": 1, "duration": "120s",
+      "trigger": {"count": 1}
+    }
+  }],
+  "notificationChannels": ["projects/terpomo-pmitz-mcp/notificationChannels/11034162506586188963"],
+  "alertStrategy": {"autoClose": "1800s"}
+}

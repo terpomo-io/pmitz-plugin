@@ -1,0 +1,245 @@
+{
+ "displayName": "Pmitz sandbox service",
+ "gridLayout": {
+  "columns": "3",
+  "widgets": [
+   {
+    "title": "Sandboxes created per hour, by assistant",
+    "xyChart": {
+     "dataSets": [
+      {
+       "plotType": "STACKED_BAR",
+       "timeSeriesQuery": {
+        "timeSeriesFilter": {
+         "filter": "metric.type=\"logging.googleapis.com/user/pmitz_sandboxes_created\" AND resource.type=\"cloud_run_revision\"",
+         "aggregation": {
+          "alignmentPeriod": "3600s",
+          "perSeriesAligner": "ALIGN_SUM",
+          "crossSeriesReducer": "REDUCE_SUM",
+          "groupByFields": [
+           "metric.label.client"
+          ]
+         }
+        }
+       }
+      }
+     ],
+     "timeshiftDuration": "0s",
+     "yAxis": {
+      "scale": "LINEAR"
+     }
+    }
+   },
+   {
+    "title": "MCP connections per hour, by assistant",
+    "xyChart": {
+     "dataSets": [
+      {
+       "plotType": "STACKED_BAR",
+       "timeSeriesQuery": {
+        "timeSeriesFilter": {
+         "filter": "metric.type=\"logging.googleapis.com/user/pmitz_mcp_connects\" AND resource.type=\"cloud_run_revision\"",
+         "aggregation": {
+          "alignmentPeriod": "3600s",
+          "perSeriesAligner": "ALIGN_SUM",
+          "crossSeriesReducer": "REDUCE_SUM",
+          "groupByFields": [
+           "metric.label.client"
+          ]
+         }
+        }
+       }
+      }
+     ],
+     "timeshiftDuration": "0s",
+     "yAxis": {
+      "scale": "LINEAR"
+     }
+    }
+   },
+   {
+    "title": "Tool calls per hour, by tool",
+    "xyChart": {
+     "dataSets": [
+      {
+       "plotType": "STACKED_BAR",
+       "timeSeriesQuery": {
+        "timeSeriesFilter": {
+         "filter": "metric.type=\"logging.googleapis.com/user/pmitz_tool_calls\" AND resource.type=\"cloud_run_revision\"",
+         "aggregation": {
+          "alignmentPeriod": "3600s",
+          "perSeriesAligner": "ALIGN_SUM",
+          "crossSeriesReducer": "REDUCE_SUM",
+          "groupByFields": [
+           "metric.label.tool"
+          ]
+         }
+        }
+       }
+      }
+     ],
+     "timeshiftDuration": "0s",
+     "yAxis": {
+      "scale": "LINEAR"
+     }
+    }
+   },
+   {
+    "title": "Tool calls per hour, by outcome",
+    "xyChart": {
+     "dataSets": [
+      {
+       "plotType": "STACKED_BAR",
+       "timeSeriesQuery": {
+        "timeSeriesFilter": {
+         "filter": "metric.type=\"logging.googleapis.com/user/pmitz_tool_calls\" AND resource.type=\"cloud_run_revision\"",
+         "aggregation": {
+          "alignmentPeriod": "3600s",
+          "perSeriesAligner": "ALIGN_SUM",
+          "crossSeriesReducer": "REDUCE_SUM",
+          "groupByFields": [
+           "metric.label.outcome"
+          ]
+         }
+        }
+       }
+      }
+     ],
+     "timeshiftDuration": "0s",
+     "yAxis": {
+      "scale": "LINEAR"
+     }
+    }
+   },
+   {
+    "title": "REST calls per hour, by resource",
+    "xyChart": {
+     "dataSets": [
+      {
+       "plotType": "STACKED_BAR",
+       "timeSeriesQuery": {
+        "timeSeriesFilter": {
+         "filter": "metric.type=\"logging.googleapis.com/user/pmitz_rest_calls\" AND resource.type=\"cloud_run_revision\"",
+         "aggregation": {
+          "alignmentPeriod": "3600s",
+          "perSeriesAligner": "ALIGN_SUM",
+          "crossSeriesReducer": "REDUCE_SUM",
+          "groupByFields": [
+           "metric.label.resource"
+          ]
+         }
+        }
+       }
+      }
+     ],
+     "timeshiftDuration": "0s",
+     "yAxis": {
+      "scale": "LINEAR"
+     }
+    }
+   },
+   {
+    "title": "Requests refused by a limit, per hour",
+    "xyChart": {
+     "dataSets": [
+      {
+       "plotType": "STACKED_BAR",
+       "timeSeriesQuery": {
+        "timeSeriesFilter": {
+         "filter": "metric.type=\"logging.googleapis.com/user/pmitz_rate_limited\" AND resource.type=\"cloud_run_revision\"",
+         "aggregation": {
+          "alignmentPeriod": "3600s",
+          "perSeriesAligner": "ALIGN_SUM",
+          "crossSeriesReducer": "REDUCE_SUM",
+          "groupByFields": [
+           "metric.label.client"
+          ]
+         }
+        }
+       }
+      }
+     ],
+     "timeshiftDuration": "0s",
+     "yAxis": {
+      "scale": "LINEAR"
+     }
+    }
+   },
+   {
+    "title": "All requests per 5 minutes, by response class",
+    "xyChart": {
+     "dataSets": [
+      {
+       "plotType": "STACKED_BAR",
+       "timeSeriesQuery": {
+        "timeSeriesFilter": {
+         "filter": "metric.type=\"run.googleapis.com/request_count\" AND resource.type=\"cloud_run_revision\" AND resource.label.service_name=\"pmitz-mcp\"",
+         "aggregation": {
+          "alignmentPeriod": "300s",
+          "perSeriesAligner": "ALIGN_SUM",
+          "crossSeriesReducer": "REDUCE_SUM",
+          "groupByFields": [
+           "metric.label.response_code_class"
+          ]
+         }
+        }
+       }
+      }
+     ],
+     "timeshiftDuration": "0s",
+     "yAxis": {
+      "scale": "LINEAR"
+     }
+    }
+   },
+   {
+    "title": "Response time, 95th percentile (ms)",
+    "xyChart": {
+     "dataSets": [
+      {
+       "plotType": "LINE",
+       "timeSeriesQuery": {
+        "timeSeriesFilter": {
+         "filter": "metric.type=\"run.googleapis.com/request_latencies\" AND resource.type=\"cloud_run_revision\" AND resource.label.service_name=\"pmitz-mcp\"",
+         "aggregation": {
+          "alignmentPeriod": "300s",
+          "perSeriesAligner": "ALIGN_PERCENTILE_95",
+          "crossSeriesReducer": "REDUCE_MAX"
+         }
+        }
+       }
+      }
+     ],
+     "timeshiftDuration": "0s",
+     "yAxis": {
+      "scale": "LINEAR"
+     }
+    }
+   },
+   {
+    "title": "Health check: regions passing",
+    "xyChart": {
+     "dataSets": [
+      {
+       "plotType": "LINE",
+       "timeSeriesQuery": {
+        "timeSeriesFilter": {
+         "filter": "metric.type=\"monitoring.googleapis.com/uptime_check/check_passed\" AND resource.type=\"uptime_url\" AND metric.label.check_id=\"pmitz-sandbox-server-JwiUxoDYc2Y\"",
+         "aggregation": {
+          "alignmentPeriod": "300s",
+          "perSeriesAligner": "ALIGN_FRACTION_TRUE",
+          "crossSeriesReducer": "REDUCE_MEAN"
+         }
+        }
+       }
+      }
+     ],
+     "timeshiftDuration": "0s",
+     "yAxis": {
+      "scale": "LINEAR"
+     }
+    }
+   }
+  ]
+ }
+}
