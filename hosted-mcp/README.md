@@ -45,6 +45,7 @@ The gateway writes one JSON line per event to standard output, which Cloud Run s
 | `tool_call` | A tool is called | `tool`, `outcome` (`ok`, `refused` or `error`) |
 | `rest_call` | An application calls the REST address of a sandbox | `sandbox`, `method`, `resource`, `status` |
 | `rate_limited` | A request is refused by a limit | |
+| `signed_in` | A user signs in with GitHub (only with sign-in on) | `userName`, `company`, `firstTime` |
 
 Every entry also has:
 
@@ -57,13 +58,40 @@ Every entry also has:
 
 `network` and `country` come from the public-domain tables of [iptoasn.com](https://iptoasn.com), which the gateway downloads at start and once a day and searches in memory. No address is sent to anyone. Until the tables are loaded, and for an address with no public owner, both are `unknown`.
 
+With sign-in on, every MCP entry also has `user`, the GitHub username.
+
 The log never holds the content of a request, a sandbox key, or an identifier chosen by the developer. `test.mjs` checks that when `GATEWAY_LOG` names the file the gateway's output was redirected to. Cloud Logging keeps the entries for 30 days.
 
-To read it:
+### Who uses it
+
+```bash
+node who.mjs        # the last 7 days; `node who.mjs 30` for 30
+```
+
+prints one block per caller: who it is, when it was seen, from where, with which assistant, and what it did. A signed-in caller is shown by GitHub username, name and company. Any other caller is shown by who its address is registered to. The network in the log is often an internet provider; the internet registries (ARIN, RIPE and the others) also record who each block was assigned to, which can be the provider's customer, a company. `who.mjs` asks them, and the DNS for the host name. It runs on your machine with `gcloud` signed in, not in the service: the registries limit requests per sender, and the service shares its outgoing addresses with other Google Cloud customers.
+
+To read the raw log:
 
 ```bash
 gcloud logging read 'resource.labels.service_name="pmitz-mcp" AND jsonPayload.usage.event="sandbox_created"' \
   --project terpomo-pmitz-mcp --freshness 7d --format 'value(timestamp, jsonPayload.usage.client, jsonPayload.usage.address, jsonPayload.usage.country, jsonPayload.usage.network)'
+```
+
+## Sign-in with GitHub
+
+Off by default: `/mcp` needs no sign-in. When the gateway is given a GitHub OAuth app in `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET`, `/mcp` answers 401 until the assistant has signed its user in, the way the MCP authorization specification describes: the assistant discovers the gateway's OAuth endpoints, registers itself, and opens a browser where the user confirms which assistant is connecting and then signs in at GitHub. [`sign-in.mjs`](sign-in.mjs) holds it and explains each step.
+
+- The gateway asks GitHub for no permission. It reads the public profile (username, name, company), stores it in `gateway.account`, and does not keep GitHub's token.
+- A sandbox created while signed in is recorded under its user (`gateway.sandbox.owner_github_id`), and the usage log names the user.
+- The REST address of a sandbox is unchanged: an application authenticates with the sandbox key.
+- The OAuth app's callback address is `<PUBLIC_URL>/oauth/github/callback`.
+
+`node test-sign-in.mjs` tests it against a stand-in for GitHub, with the same local stack as `test.mjs`: the whole sign-in, refresh, and what a hostile client must not be able to do.
+
+To see who signed in:
+
+```sql
+SELECT login, name, company, first_seen, last_seen FROM gateway.account ORDER BY last_seen DESC;
 ```
 
 ## Monitoring

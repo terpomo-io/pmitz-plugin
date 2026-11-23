@@ -5,7 +5,7 @@ ENV NODE_ENV=production
 WORKDIR /app/hosted-mcp
 COPY hosted-mcp/package.json hosted-mcp/package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
-COPY hosted-mcp/server.mjs ./
+COPY hosted-mcp/server.mjs hosted-mcp/sign-in.mjs ./
 COPY plugins/pmitz/server/pmitz-mcp.mjs /app/plugins/pmitz/server/pmitz-mcp.mjs
 USER node
 EXPOSE 8090

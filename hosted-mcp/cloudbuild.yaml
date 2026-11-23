@@ -5,4 +5,4 @@ steps:
     args: ['build', '-f', 'hosted-mcp/Dockerfile', '-t', '$_IMAGE', '.']
 images: ['$_IMAGE']
 substitutions:
-  _IMAGE: us-central1-docker.pkg.dev/terpomo-pmitz-mcp/pmitz/hosted-mcp:0.1.4
+  _IMAGE: us-central1-docker.pkg.dev/terpomo-pmitz-mcp/pmitz/hosted-mcp:0.1.5
