@@ -33,6 +33,7 @@ Try “Create a Pmitz sandbox with a Free plan of 3 exports and a Pro plan of 10
 The `pmitz-sandbox` MCP server runs at `https://pmitz-mcp.web.app/mcp`. Its `pmitz_create_sandbox` tool creates a Pmitz sandbox, a real Pmitz server, in a few seconds, with no account and nothing to install, and returns a sandbox key. The other tools are the ones of the local MCP server, with that key added, plus `pmitz_sandbox_status` and `pmitz_export_plans`.
 
 - **It is temporary.** A sandbox is deleted 72 hours after it is created. It is for development and testing, not for production.
+- **Sign in to keep it longer.** Optional: `pmitz_keep_sandbox` signs you in with GitHub and keeps the sandbox for 30 days. It reads only your public GitHub profile (username, name and company).
 - **Your application can call it.** Each sandbox has a REST address, `https://pmitz-mcp.web.app/sandbox/<id>`, that follows the Pmitz REST API. Send the sandbox key in the `X-Api-Key` header.
 - **You keep your plans.** `pmitz_export_plans` returns the product definitions exactly as they were created, ready to load into your own Pmitz server. Subscriptions and recorded usage are not exported.
 - **What you put in a sandbox is stored by Terpomo Software** until the sandbox expires. Do not put personal or confidential information in it.

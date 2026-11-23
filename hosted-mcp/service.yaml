@@ -34,6 +34,9 @@ spec:
             # The token OpenAI's plugin portal asks for to verify the domain. It is public by design.
             - name: OPENAI_APPS_CHALLENGE
               value: EOUEV4Qlrng-JHE-8x-kMcHADivmdqQ1wV_BLbg6erU
+            # The client ID of the GitHub OAuth app "Pmitz sandbox", for the optional sign-in. It is public by design.
+            - name: GITHUB_CLIENT_ID
+              value: Ov23lirO0C290cBP4YAU
             - name: PMITZ_INTERNAL_KEY
               valueFrom:
                 secretKeyRef:

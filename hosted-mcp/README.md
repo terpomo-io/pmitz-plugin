@@ -6,7 +6,7 @@ The service behind `https://pmitz-mcp.web.app`. It gives an AI assistant a Pmitz
 
 - **`POST /mcp`** is an MCP server over Streamable HTTP, with no sign-in. `pmitz_create_sandbox` creates a sandbox and returns its key. The other Pmitz tools are the ones of the local MCP server in [`plugins/pmitz/server/pmitz-mcp.mjs`](../plugins/pmitz/server/pmitz-mcp.mjs), with the sandbox key added, plus `pmitz_sandbox_status` and `pmitz_export_plans`.
 - **`/sandbox/<id>/...`** is the Pmitz REST API of one sandbox, for the developer's application. The sandbox key goes in the `X-Api-Key` header.
-- A sandbox is deleted 72 hours after it is created. It is for development and testing, not for production.
+- A sandbox is deleted 72 hours after it is created, or 30 days for a user who signs in with GitHub, which is optional. It is for development and testing, not for production.
 
 ## How it works
 
@@ -14,7 +14,7 @@ One real Pmitz server runs next to the gateway. Each sandbox is a private slice 
 
 Pmitz keeps its catalog in memory, so the gateway stores every product definition of a sandbox and sends it again after the Pmitz process restarts. That stored copy is also what `pmitz_export_plans` returns.
 
-There are no accounts yet. Product definitions, subscriptions and usage are kept in Pmitz's own form, so a sandbox can be moved by replaying them through the Pmitz API.
+There are no accounts: the optional GitHub sign-in only records who keeps a sandbox. Product definitions, subscriptions and usage are kept in Pmitz's own form, so a sandbox can be moved by replaying them through the Pmitz API.
 
 Limits, in `server.mjs`: 10 products and 500 subscriptions per sandbox, 120 requests a minute per sandbox, 64 KB per request, and a cap on new sandboxes per hour.
 
