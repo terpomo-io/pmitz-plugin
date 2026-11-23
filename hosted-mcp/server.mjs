@@ -20,7 +20,7 @@
 //   PORT                 Port to listen on (default 8090)
 //   SWEEP_SECONDS        Minimum time between two clean-ups of expired sandboxes (default 600)
 
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
 import pg from 'pg';
 
@@ -66,6 +66,59 @@ class Refusal extends Error {
 		super(message);
 		this.status = status;
 	}
+}
+
+// ---------------------------------------------------------------------------------------------
+// Usage log
+// ---------------------------------------------------------------------------------------------
+
+// One JSON line per event on standard output, which Cloud Run stores as a structured log entry. It records
+// what was used and by which kind of assistant, never the content of a request, a sandbox key or an address.
+
+// Which assistant a request comes from, read from the name it sends in its User-Agent.
+function clientKind(userAgent) {
+	const text = String(userAgent ?? '').toLowerCase();
+	if (text.includes('claude')) {
+		return 'Claude';
+	}
+	if (text.includes('codex')) {
+		return 'Codex';
+	}
+	if (text.includes('openai') || text.includes('chatgpt')) {
+		return 'ChatGPT';
+	}
+	const product = /^[a-z0-9._-]{1,40}/.exec(text);
+	return product ? product[0] : 'unknown';
+}
+
+// Stands for one caller for one day: a keyed hash of the address and the date. It lets distinct callers be
+// counted, cannot be turned back into the address, and changes at midnight UTC.
+function callerOf(address) {
+	const day = new Date().toISOString().slice(0, 10);
+	return createHmac('sha256', settings.pmitzKey).update(`${day}:${address}`).digest('hex').slice(0, 12);
+}
+
+function logUsage(event, context, fields = {}) {
+	console.log(JSON.stringify({
+		severity: 'INFO',
+		message: `usage ${event}`,
+		usage: { event, client: context.client, caller: context.caller, ...fields },
+	}));
+}
+
+// How the request was forwarded, without any address: how many hops X-Forwarded-For lists and which of the
+// headers that proxies add are present. Used to check which header carries the caller's address.
+function forwardingShape(request) {
+	const hops = String(request.headers['x-forwarded-for'] ?? '').split(',').map((hop) => hop.trim()).filter(Boolean);
+	const shape = { hops: hops.length };
+	for (const header of ['fastly-client-ip', 'x-fah-client-ip', 'x-appengine-user-ip', 'x-forwarded-host', 'forwarded', 'via']) {
+		const value = String(request.headers[header] ?? '').trim();
+		if (value) {
+			const position = hops.indexOf(value);
+			shape[header] = position >= 0 ? `hop ${position + 1}` : 'present';
+		}
+	}
+	return shape;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -511,7 +564,7 @@ function describeSandbox(sandbox) {
 	};
 }
 
-async function callTool(name, args, address) {
+async function callTool(name, args, context) {
 	if (args === null || typeof args !== 'object' || Array.isArray(args)) {
 		throw new ToolError('Tool arguments must be an object.');
 	}
@@ -520,7 +573,8 @@ async function callTool(name, args, address) {
 	}
 	try {
 		if (name === 'pmitz_create_sandbox') {
-			const created = await createSandbox(address);
+			const created = await createSandbox(context.address);
+			logUsage('sandbox_created', context, { sandbox: created.id });
 			return {
 				ok: true,
 				tellTheUser: 'In your answer to the user, always include the sandbox key and when the sandbox expires, '
@@ -560,6 +614,9 @@ async function callTool(name, args, address) {
 	}
 	catch (error) {
 		if (error instanceof Refusal) {
+			if (error.status === 429) {
+				logUsage('rate_limited', context, {});
+			}
 			throw new ToolError(error.message);
 		}
 		throw error;
@@ -616,7 +673,7 @@ function toolResult(value, isError) {
 	return { content: [{ type: 'text', text }], isError };
 }
 
-async function handleRpc(message, address) {
+async function handleRpc(message, context) {
 	const { id, method, params } = message;
 	const isRequest = id !== undefined && id !== null;
 	const result = (value) => ({ jsonrpc: '2.0', id, result: value });
@@ -624,6 +681,11 @@ async function handleRpc(message, address) {
 	switch (method) {
 		case 'initialize': {
 			const requested = params?.protocolVersion;
+			logUsage('mcp_connect', context, {
+				clientName: String(params?.clientInfo?.name ?? '').slice(0, 60),
+				clientVersion: String(params?.clientInfo?.version ?? '').slice(0, 30),
+				forwarding: context.forwarding,
+			});
 			return result({
 				protocolVersion: SUPPORTED_PROTOCOL_VERSIONS.includes(requested) ? requested : SUPPORTED_PROTOCOL_VERSIONS[0],
 				capabilities: { tools: {} },
@@ -638,14 +700,19 @@ async function handleRpc(message, address) {
 		case 'tools/list':
 			return result({ tools: ALL_TOOLS });
 		case 'tools/call': {
+			// Only the names of real tools are logged, so nothing a caller types ends up in the log.
+			const tool = ALL_TOOLS.some((known) => known.name === params?.name) ? params.name : 'unknown';
 			try {
-				const value = await callTool(params?.name, params?.arguments ?? {}, address);
+				const value = await callTool(params?.name, params?.arguments ?? {}, context);
+				logUsage('tool_call', context, { tool, outcome: value?.ok === false ? 'refused' : 'ok' });
 				return result(toolResult(value, value?.ok === false));
 			}
 			catch (error) {
 				if (error instanceof ToolError) {
+					logUsage('tool_call', context, { tool, outcome: 'refused' });
 					return result(toolResult(error.message, true));
 				}
+				logUsage('tool_call', context, { tool, outcome: 'error' });
 				console.error(`unexpected error in ${params?.name}: ${error?.message}`);
 				return result(toolResult('The service hit an unexpected error.', true));
 			}
@@ -655,7 +722,7 @@ async function handleRpc(message, address) {
 	}
 }
 
-async function handleMcp(request, response, address) {
+async function handleMcp(request, response, context) {
 	if (request.method === 'OPTIONS') {
 		response.writeHead(204, CORS);
 		response.end();
@@ -683,7 +750,7 @@ async function handleMcp(request, response, address) {
 		if (message === null || typeof message !== 'object' || typeof message.method !== 'string') {
 			continue;
 		}
-		const reply = await handleRpc(message, address);
+		const reply = await handleRpc(message, context);
 		if (reply) {
 			replies.push(reply);
 		}
@@ -696,7 +763,7 @@ async function handleMcp(request, response, address) {
 	sendJson(response, 200, Array.isArray(payload) ? replies : replies[0], CORS);
 }
 
-async function handleRest(request, response, sandboxId, rest) {
+async function handleRest(request, response, sandboxId, rest, context) {
 	const sandbox = await authenticate(request.headers['x-api-key'], sandboxId);
 	let body;
 	if (request.method === 'POST' || request.method === 'PATCH') {
@@ -711,6 +778,9 @@ async function handleRest(request, response, sandboxId, rest) {
 		}
 	}
 	const result = await forward(sandbox, request.method, rest, body);
+	// The first path segment only: the rest holds the developer's own identifiers.
+	const resource = /^\/([a-z-]{1,30})/.exec(rest)?.[1] ?? 'other';
+	logUsage('rest_call', context, { sandbox: sandbox.id, method: request.method, resource, status: result.status });
 	if (result.body === null || result.body === undefined) {
 		response.writeHead(result.status, { 'Cache-Control': 'no-store' });
 		response.end();
@@ -739,17 +809,21 @@ const HOME_PAGE = `<!doctype html>
 const server = createServer(async (request, response) => {
 	const address = clientAddress(request);
 	const url = new URL(request.url ?? '/', 'http://localhost');
+	const context = { address };
 	try {
 		if (url.pathname === '/health') {
 			sendText(response, 200, 'ok');
 			return;
 		}
+		context.client = clientKind(request.headers['user-agent']);
+		context.caller = callerOf(address);
+		context.forwarding = forwardingShape(request);
 		if (!allow(`address:${address}`, LIMITS.requestsPerAddressPerMinute, 60 * 1000)) {
 			throw new Refusal(429, 'Too many requests. Wait a minute.');
 		}
 		sweepExpired();
 		if (url.pathname === '/mcp') {
-			await handleMcp(request, response, address);
+			await handleMcp(request, response, context);
 			return;
 		}
 		if (url.pathname === '/.well-known/openai-apps-challenge') {
@@ -761,7 +835,7 @@ const server = createServer(async (request, response) => {
 		}
 		const rest = /^\/sandbox\/([a-z0-9]{12})(\/.*)$/.exec(url.pathname);
 		if (rest) {
-			await handleRest(request, response, rest[1], rest[2]);
+			await handleRest(request, response, rest[1], rest[2], context);
 			return;
 		}
 		if (url.pathname === '/' && request.method === 'GET') {
@@ -776,6 +850,9 @@ const server = createServer(async (request, response) => {
 			return;
 		}
 		if (error instanceof Refusal) {
+			if (error.status === 429 && context.caller) {
+				logUsage('rate_limited', context, {});
+			}
 			sendJson(response, error.status, { error: error.message });
 			return;
 		}

@@ -34,6 +34,29 @@ GATEWAY_URL=http://127.0.0.1:18090 RESTART_PMITZ="docker restart pmitz-hosted-pm
 
 The test covers the MCP surface, the REST surface, isolation between sandboxes, a restart of Pmitz, the limits against abuse, expiry and clean-up. Against the deployed service, `LIVE=1 GATEWAY_URL=https://pmitz-mcp.web.app node test.mjs` runs the parts that need no database access.
 
+## Usage log
+
+The gateway writes one JSON line per event to standard output, which Cloud Run stores as a structured log entry under `jsonPayload.usage`:
+
+| `event` | When | Fields |
+|---|---|---|
+| `mcp_connect` | An assistant opens an MCP connection | `clientName`, `clientVersion`, `forwarding` |
+| `sandbox_created` | A sandbox is created | `sandbox` |
+| `tool_call` | A tool is called | `tool`, `outcome` (`ok`, `refused` or `error`) |
+| `rest_call` | An application calls the REST address of a sandbox | `sandbox`, `method`, `resource`, `status` |
+| `rate_limited` | A request is refused by a limit | |
+
+Every entry also has `client`, the kind of assistant read from its User-Agent (`Claude`, `Codex`, `ChatGPT` or the program's name), and `caller`, a keyed hash of the caller's address and the date. `caller` lets distinct callers be counted for one day; it cannot be turned back into the address and changes at midnight UTC.
+
+The log never holds the content of a request, a sandbox key, an address, or an identifier chosen by the developer. `test.mjs` checks that when `GATEWAY_LOG` names the file the gateway's output was redirected to.
+
+To read it:
+
+```bash
+gcloud logging read 'resource.labels.service_name="pmitz-mcp" AND jsonPayload.usage.event="sandbox_created"' \
+  --project terpomo-pmitz-mcp --freshness 7d --format 'value(timestamp, jsonPayload.usage.client, jsonPayload.usage.caller)'
+```
+
 ## Deployment
 
 It runs in the Google Cloud project `terpomo-pmitz-mcp` of the terpomosoft.com organization:

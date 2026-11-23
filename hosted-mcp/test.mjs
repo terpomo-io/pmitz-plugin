@@ -11,6 +11,7 @@
 // skips what needs the database or would use up the service's limits: restart, abuse limits and expiry.
 
 import { execSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import pg from 'pg';
 
 const BASE = (process.env.GATEWAY_URL ?? 'http://127.0.0.1:18090').replace(/\/+$/, '');
@@ -116,7 +117,7 @@ console.log('1. Service');
 		body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
 	});
 	check('a notification gets 202 and no body', note.status === 202 && (await note.text()) === '');
-	const init = await rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1' } });
+	const init = await rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'gateway-test', version: '1' } });
 	check('initialize names the server', init.result?.serverInfo?.name === 'pmitz-sandbox' && init.result?.protocolVersion === '2025-06-18');
 	check('instructions say a sandbox is temporary', /72 hours/.test(init.result?.instructions ?? ''));
 	const tools = (await rpc('tools/list')).result.tools;
@@ -310,6 +311,27 @@ console.log('8. Nothing internal leaks');
 	check('the internal Pmitz key never appears', LIVE || (INTERNAL_KEY !== '' && !everything.includes(INTERNAL_KEY)));
 	check('sandbox prefixes never appear', !everything.includes(`${ID}--`) && !everything.includes(`${ID2}--`));
 	check('the internal address never appears', !/127\.0\.0\.1:18080|localhost:8080/.test(everything));
+}
+
+// The usage log is the gateway's standard output. GATEWAY_LOG names the file it was redirected to.
+if (process.env.GATEWAY_LOG && !LIVE) {
+	console.log('9. Usage log');
+	const lines = readFileSync(process.env.GATEWAY_LOG, 'utf8').split('\n').filter((line) => line.startsWith('{'));
+	const events = lines.map((line) => JSON.parse(line).usage).filter(Boolean);
+	const of = (event) => events.filter((entry) => entry.event === event);
+	check('a connection is logged with the client it announced', of('mcp_connect').some((entry) => entry.clientName === 'gateway-test'));
+	check('each created sandbox is logged', [ID, ID2].every((id) => of('sandbox_created').some((entry) => entry.sandbox === id)));
+	check('tool calls are logged with their outcome',
+		of('tool_call').some((entry) => entry.tool === 'pmitz_create_product' && entry.outcome === 'ok')
+		&& of('tool_call').some((entry) => entry.outcome === 'refused'));
+	check('an unknown tool is logged without its name', of('tool_call').some((entry) => entry.tool === 'unknown'));
+	check('REST calls are logged by resource', of('rest_call').some((entry) => entry.resource === 'subscriptions' && entry.sandbox === ID && entry.status === 200));
+	check('refused bursts are logged', of('rate_limited').length > 0);
+	check('every entry names a client and a caller', events.every((entry) => entry.client && /^[0-9a-f]{12}$/.test(entry.caller)));
+	const text = lines.join('\n');
+	check('no sandbox key is logged', !text.includes(KEY) && !text.includes(KEY2) && !/pmz_[a-z0-9]{12}_/.test(text));
+	check('no address is logged', !/\b\d{1,3}(\.\d{1,3}){3}\b/.test(text) && !text.includes('::1') && !text.includes('::ffff'));
+	check('no identifier of the developer is logged', !text.includes('acme') && !text.includes('monthly-customer'));
 }
 
 await db?.end();
