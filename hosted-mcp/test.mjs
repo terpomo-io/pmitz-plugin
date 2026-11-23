@@ -326,6 +326,13 @@ if (process.env.GATEWAY_LOG && !LIVE) {
 		});
 	};
 	const HOSTING = '1.1 Firebase Hosting';
+	// The gateway downloads the network tables after it starts; a caller's network is unknown until then.
+	for (let waited = 0; waited < 90 && !readFileSync(process.env.GATEWAY_LOG, 'utf8').includes('network tables loaded'); waited++) {
+		await new Promise((resolve) => setTimeout(resolve, 1000));
+	}
+	await connectAs('from-a-known-network', '8.8.8.8');
+	await connectAs('from-a-known-network-v6', '2001:4860:4860::8888');
+	await connectAs('from-a-private-address', '10.1.2.3');
 	await connectAs('through-hosting-1', '198.51.100.1, 66.249.64.10', HOSTING);
 	await connectAs('through-hosting-2', '198.51.100.2, 66.249.64.10', HOSTING);
 	await connectAs('through-hosting-1-again', '198.51.100.1, 66.249.64.10', HOSTING);
@@ -359,9 +366,18 @@ if (process.env.GATEWAY_LOG && !LIVE) {
 		seenAs('cloud-customer-posing-as-hosting').via === 'unrecognised'
 		&& seenAs('cloud-customer-posing-as-hosting').caller !== seenAs('through-hosting-1').caller);
 	check('every entry names a client and a caller', events.every((entry) => entry.client && /^[0-9a-f]{12}$/.test(entry.caller)));
+	check('the address logged is the one the request really came from',
+		seenAs('through-hosting-1').address === '198.51.100.1' && seenAs('direct-honest').address === '203.0.113.50'
+		&& seenAs('direct-faking-an-address').address === '203.0.113.50' && seenAs('direct-posing-as-hosting').address === '203.0.113.50'
+		&& seenAs('cloud-customer-posing-as-hosting').address === '34.1.0.10');
+	check('the owner and country of the caller\'s network are logged',
+		/^AS15169 GOOGLE/.test(seenAs('from-a-known-network').network) && seenAs('from-a-known-network').country === 'US'
+		&& /^AS15169 GOOGLE/.test(seenAs('from-a-known-network-v6').network));
+	check('an address with no public owner is logged as unknown',
+		seenAs('from-a-private-address').network === 'unknown' && seenAs('from-a-private-address').country === 'unknown');
+	check('every entry has an address, a network and a country', events.every((entry) => entry.address && entry.network && entry.country));
 	const text = lines.join('\n');
 	check('no sandbox key is logged', !text.includes(KEY) && !text.includes(KEY2) && !/pmz_[a-z0-9]{12}_/.test(text));
-	check('no address is logged', !/\b\d{1,3}(\.\d{1,3}){3}\b/.test(text) && !text.includes('::1') && !text.includes('::ffff'));
 	check('no identifier of the developer is logged', !text.includes('acme') && !text.includes('monthly-customer'));
 }
 

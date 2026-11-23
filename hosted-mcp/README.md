@@ -46,15 +46,24 @@ The gateway writes one JSON line per event to standard output, which Cloud Run s
 | `rest_call` | An application calls the REST address of a sandbox | `sandbox`, `method`, `resource`, `status` |
 | `rate_limited` | A request is refused by a limit | |
 
-Every entry also has `client`, the kind of assistant read from its User-Agent (`Claude`, `Codex`, `ChatGPT` or the program's name), `via`, how the request arrived (`hosting`, `direct`, `unrecognised` or `local`, explained under Monitoring), and `caller`, a keyed hash of the caller's address and the date. `caller` lets distinct callers be counted for one day; it cannot be turned back into the address and changes at midnight UTC.
+Every entry also has:
 
-The log never holds the content of a request, a sandbox key, an address, or an identifier chosen by the developer. `test.mjs` checks that when `GATEWAY_LOG` names the file the gateway's output was redirected to.
+- `client`: the kind of assistant, read from its User-Agent (`Claude`, `Codex`, `ChatGPT` or the program's name).
+- `via`: how the request arrived (`hosting`, `direct`, `unrecognised` or `local`, explained under Monitoring).
+- `address`: the caller's IP address.
+- `network`: the owner of the network that address belongs to, for example `AS15169 GOOGLE - Google LLC`. It tells a cloud provider from a company or a home connection.
+- `country`: the country that network is registered in.
+- `caller`: a keyed hash of the address and the date, a short value to count distinct callers of one day.
+
+`network` and `country` come from the public-domain tables of [iptoasn.com](https://iptoasn.com), which the gateway downloads at start and once a day and searches in memory. No address is sent to anyone. Until the tables are loaded, and for an address with no public owner, both are `unknown`.
+
+The log never holds the content of a request, a sandbox key, or an identifier chosen by the developer. `test.mjs` checks that when `GATEWAY_LOG` names the file the gateway's output was redirected to. Cloud Logging keeps the entries for 30 days.
 
 To read it:
 
 ```bash
 gcloud logging read 'resource.labels.service_name="pmitz-mcp" AND jsonPayload.usage.event="sandbox_created"' \
-  --project terpomo-pmitz-mcp --freshness 7d --format 'value(timestamp, jsonPayload.usage.client, jsonPayload.usage.caller)'
+  --project terpomo-pmitz-mcp --freshness 7d --format 'value(timestamp, jsonPayload.usage.client, jsonPayload.usage.address, jsonPayload.usage.country, jsonPayload.usage.network)'
 ```
 
 ## Monitoring

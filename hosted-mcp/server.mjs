@@ -23,6 +23,7 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
 import { BlockList, isIP } from 'node:net';
+import { gunzipSync } from 'node:zlib';
 import pg from 'pg';
 
 import { createToolset, ToolError, SERVER_VERSION, GROUP_TYPES } from '../plugins/pmitz/server/pmitz-mcp.mjs';
@@ -93,7 +94,7 @@ function clientKind(userAgent) {
 }
 
 // Stands for one caller for one day: a keyed hash of the address and the date. It lets distinct callers be
-// counted, cannot be turned back into the address, and changes at midnight UTC.
+// counted with one short value, and changes at midnight UTC.
 function callerHash(address) {
 	const day = new Date().toISOString().slice(0, 10);
 	return createHmac('sha256', settings.pmitzKey).update(`${day}:${address}`).digest('hex').slice(0, 12);
@@ -103,7 +104,10 @@ function logUsage(event, context, fields = {}) {
 	console.log(JSON.stringify({
 		severity: 'INFO',
 		message: `usage ${event}`,
-		usage: { event, client: context.client, caller: context.caller, via: context.via, ...fields },
+		usage: {
+			event, client: context.client, caller: context.caller, via: context.via,
+			address: context.address, network: context.network, country: context.country, ...fields,
+		},
 	}));
 }
 
@@ -654,6 +658,86 @@ function isGoogleOwnMachine(address) {
 	return isIP(address) !== 0 && googleRanges.own.check(address, family) && !googleRanges.customers.check(address, family);
 }
 
+// Who an address belongs to: the network that announces it on the internet (its owner, for example a cloud
+// provider, a company or an internet provider) and the country that network is registered in. Read from the
+// public-domain tables of iptoasn.com, loaded at start and once a day. The lookup happens in this process;
+// no address is sent anywhere.
+const networkTables = { v4: null, v6: null };
+
+function v4Number(address) {
+	return address.split('.').reduce((number, part) => number * 256 + Number(part), 0);
+}
+
+// The upper 64 bits of an IPv6 address, which is as fine as networks are announced.
+function v6Upper(address) {
+	const [head, tail] = address.split('::');
+	const groups = (text) => (text ? text.split(':').flatMap((group) => (group.includes('.') ? ['0', '0'] : [group])) : []);
+	const first = groups(head);
+	const last = tail === undefined ? [] : groups(tail);
+	const all = [...first, ...Array(Math.max(0, 8 - first.length - last.length)).fill('0'), ...last];
+	return all.slice(0, 4).reduce((number, group) => (number << 16n) | BigInt(parseInt(group, 16) || 0), 0n);
+}
+
+async function readNetworkTable(name, toNumber, Numbers) {
+	const reply = await fetch(`https://iptoasn.com/data/ip2asn-${name}.tsv.gz`, { signal: AbortSignal.timeout(60000) });
+	if (!reply.ok) {
+		throw new Error(`${name} table: HTTP ${reply.status}`);
+	}
+	const rows = gunzipSync(Buffer.from(await reply.arrayBuffer())).toString('utf8').split('\n')
+		.map((line) => line.split('\t')).filter((row) => row.length >= 5 && row[2] !== '0');
+	const table = { starts: new Numbers(rows.length), ends: new Numbers(rows.length), owner: new Uint32Array(rows.length), owners: [] };
+	const known = new Map();
+	rows.forEach(([start, end, number, country, name_], index) => {
+		const key = `${number}\t${country}`;
+		if (!known.has(key)) {
+			known.set(key, table.owners.length);
+			table.owners.push({ network: `AS${number} ${name_}`.slice(0, 120), country: /^[A-Z]{2}$/.test(country) ? country : 'unknown' });
+		}
+		table.starts[index] = toNumber(start);
+		table.ends[index] = toNumber(end);
+		table.owner[index] = known.get(key);
+	});
+	return table;
+}
+
+async function loadNetworkTables() {
+	try {
+		networkTables.v4 = await readNetworkTable('v4', v4Number, Float64Array);
+		networkTables.v6 = await readNetworkTable('v6', v6Upper, BigUint64Array);
+		console.log(`network tables loaded: ${networkTables.v4.starts.length + networkTables.v6.starts.length} ranges`);
+	}
+	catch (error) {
+		console.error(`could not load the network tables, keeping the previous ones: ${error.message}`);
+	}
+}
+
+const UNKNOWN_NETWORK = { network: 'unknown', country: 'unknown' };
+
+function networkOf(address) {
+	let text = String(address);
+	if (text.toLowerCase().startsWith('::ffff:') && isIP(text.slice(7)) === 4) {
+		text = text.slice(7);
+	}
+	const kind = isIP(text);
+	const table = kind === 4 ? networkTables.v4 : kind === 6 ? networkTables.v6 : null;
+	if (!table) {
+		return UNKNOWN_NETWORK;
+	}
+	const value = kind === 4 ? v4Number(text) : v6Upper(text);
+	let low = 0;
+	let high = table.starts.length - 1;
+	while (low < high) {
+		const middle = (low + high + 1) >> 1;
+		if (table.starts[middle] <= value) {
+			low = middle;
+		}
+		else {
+			high = middle - 1;
+		}
+	}
+	return table.starts.length > 0 && table.starts[low] <= value && value <= table.ends[low] ? table.owners[table.owner[low]] : UNKNOWN_NETWORK;
+}
+
 // Returns the caller's address and how the request arrived: 'hosting' through pmitz-mcp.web.app, 'direct'
 // through the run.app address, 'unrecognised' when it names Firebase Hosting but did not come from a machine
 // of Google's own (a forged request, or a range missing from the lists), and 'local' with no proxy at all.
@@ -854,6 +938,7 @@ const server = createServer(async (request, response) => {
 		}
 		context.client = clientKind(request.headers['user-agent']);
 		context.caller = callerHash(address);
+		Object.assign(context, networkOf(address));
 		if (!allow(`address:${address}`, LIMITS.requestsPerAddressPerMinute, 60 * 1000)) {
 			throw new Refusal(429, 'Too many requests. Wait a minute.');
 		}
@@ -905,6 +990,9 @@ if (!settings.pmitzKey || !settings.databaseUrl) {
 await prepareStorage();
 await loadGoogleRanges();
 setInterval(loadGoogleRanges, 24 * 3600 * 1000).unref();
+// Not awaited: the tables are large, and until they are loaded a caller's network is logged as unknown.
+loadNetworkTables();
+setInterval(loadNetworkTables, 24 * 3600 * 1000).unref();
 server.listen(settings.port, () => {
 	console.log(`Pmitz hosted MCP listening on ${settings.port}, public address ${settings.publicUrl}`);
 });
