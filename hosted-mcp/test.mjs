@@ -121,7 +121,9 @@ console.log('1. Service');
 	check('initialize names the server', init.result?.serverInfo?.name === 'pmitz-sandbox' && init.result?.protocolVersion === '2025-06-18');
 	check('instructions say a sandbox is temporary', /72 hours/.test(init.result?.instructions ?? ''));
 	const tools = (await rpc('tools/list')).result.tools;
-	check('13 tools are listed', tools.length === 13, tools.map((tool) => tool.name).join(','));
+	// pmitz_keep_sandbox is listed only where the optional GitHub sign-in is switched on.
+	const always = tools.filter((tool) => tool.name !== 'pmitz_keep_sandbox');
+	check('13 tools are listed, and the sign-in tool where sign-in is on', always.length === 13 && tools.length <= 14, tools.map((tool) => tool.name).join(','));
 	check('no connection-status tool', !tools.some((tool) => tool.name === 'pmitz_connection_status'));
 	check('every tool but create asks for the sandbox key',
 		tools.filter((tool) => tool.name !== 'pmitz_create_sandbox').every((tool) => tool.inputSchema.required.includes('sandbox')));
