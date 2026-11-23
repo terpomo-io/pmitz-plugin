@@ -1,0 +1,35 @@
+{
+  "displayName": "Pmitz sandbox server: requests posing as Firebase Hosting",
+  "documentation": {
+    "content": "More than 20 logged events in an hour named Firebase Hosting without coming from a machine of Google's own. A few are forged requests. Many at once, with real users affected, means Firebase Hosting uses an address range that Google's published lists do not have yet: see 'Whose address a request is counted under' in hosted-mcp/README.md.",
+    "mimeType": "text/markdown"
+  },
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "More than 20 in an hour",
+      "conditionThreshold": {
+        "filter": "metric.type=\"logging.googleapis.com/user/pmitz_unrecognised_senders\" AND resource.type=\"cloud_run_revision\"",
+        "aggregations": [
+          {
+            "alignmentPeriod": "3600s",
+            "perSeriesAligner": "ALIGN_SUM",
+            "crossSeriesReducer": "REDUCE_SUM"
+          }
+        ],
+        "comparison": "COMPARISON_GT",
+        "thresholdValue": 20,
+        "duration": "0s",
+        "trigger": {
+          "count": 1
+        }
+      }
+    }
+  ],
+  "notificationChannels": [
+    "projects/terpomo-pmitz-mcp/notificationChannels/11034162506586188963"
+  ],
+  "alertStrategy": {
+    "autoClose": "1800s"
+  }
+}

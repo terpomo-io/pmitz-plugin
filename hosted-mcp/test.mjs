@@ -316,6 +316,24 @@ console.log('8. Nothing internal leaks');
 // The usage log is the gateway's standard output. GATEWAY_LOG names the file it was redirected to.
 if (process.env.GATEWAY_LOG && !LIVE) {
 	console.log('9. Usage log');
+	// Requests that arrive the way Firebase Hosting and a direct caller would send them. 66.249.64.10 is a
+	// machine of Google's own, 203.0.113.50 is not, and 34.1.0.10 belongs to a Google Cloud customer.
+	const connectAs = async (name, forwardedFor, via) => {
+		await fetch(`${BASE}/mcp`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': forwardedFor, ...(via ? { Via: via } : {}) },
+			body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name, version: '1' } } }),
+		});
+	};
+	const HOSTING = '1.1 Firebase Hosting';
+	await connectAs('through-hosting-1', '198.51.100.1, 66.249.64.10', HOSTING);
+	await connectAs('through-hosting-2', '198.51.100.2, 66.249.64.10', HOSTING);
+	await connectAs('through-hosting-1-again', '198.51.100.1, 66.249.64.10', HOSTING);
+	await connectAs('direct-honest', '203.0.113.50');
+	await connectAs('direct-faking-an-address', '198.51.100.1, 203.0.113.50');
+	await connectAs('direct-posing-as-hosting', '198.51.100.1, 203.0.113.50', HOSTING);
+	await connectAs('cloud-customer-posing-as-hosting', '198.51.100.1, 34.1.0.10', HOSTING);
+	await new Promise((resolve) => setTimeout(resolve, 300));
 	const lines = readFileSync(process.env.GATEWAY_LOG, 'utf8').split('\n').filter((line) => line.startsWith('{'));
 	const events = lines.map((line) => JSON.parse(line).usage).filter(Boolean);
 	const of = (event) => events.filter((entry) => entry.event === event);
@@ -327,6 +345,19 @@ if (process.env.GATEWAY_LOG && !LIVE) {
 	check('an unknown tool is logged without its name', of('tool_call').some((entry) => entry.tool === 'unknown'));
 	check('REST calls are logged by resource', of('rest_call').some((entry) => entry.resource === 'subscriptions' && entry.sandbox === ID && entry.status === 200));
 	check('refused bursts are logged', of('rate_limited').length > 0);
+	const seenAs = (name) => of('mcp_connect').find((entry) => entry.clientName === name) ?? {};
+	check('through Hosting, the caller is the address Hosting reports',
+		seenAs('through-hosting-1').via === 'hosting' && seenAs('through-hosting-1').caller === seenAs('through-hosting-1-again').caller
+		&& seenAs('through-hosting-1').caller !== seenAs('through-hosting-2').caller);
+	check('a direct caller is known by the address it connects from', seenAs('direct-honest').via === 'direct');
+	check('a direct caller cannot pass for another address',
+		seenAs('direct-faking-an-address').caller === seenAs('direct-honest').caller
+		&& seenAs('direct-faking-an-address').caller !== seenAs('through-hosting-1').caller);
+	check('a direct caller posing as Hosting is not believed',
+		seenAs('direct-posing-as-hosting').via === 'unrecognised' && seenAs('direct-posing-as-hosting').caller === seenAs('direct-honest').caller);
+	check('a Google Cloud customer posing as Hosting is not believed',
+		seenAs('cloud-customer-posing-as-hosting').via === 'unrecognised'
+		&& seenAs('cloud-customer-posing-as-hosting').caller !== seenAs('through-hosting-1').caller);
 	check('every entry names a client and a caller', events.every((entry) => entry.client && /^[0-9a-f]{12}$/.test(entry.caller)));
 	const text = lines.join('\n');
 	check('no sandbox key is logged', !text.includes(KEY) && !text.includes(KEY2) && !/pmz_[a-z0-9]{12}_/.test(text));

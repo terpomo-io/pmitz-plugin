@@ -23,7 +23,7 @@ spec:
       timeoutSeconds: 60
       containers:
         - name: gateway
-          image: us-central1-docker.pkg.dev/terpomo-pmitz-mcp/pmitz/hosted-mcp:0.1.2
+          image: us-central1-docker.pkg.dev/terpomo-pmitz-mcp/pmitz/hosted-mcp:0.1.3
           ports:
             - containerPort: 8090
           env:

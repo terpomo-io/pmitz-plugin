@@ -40,13 +40,13 @@ The gateway writes one JSON line per event to standard output, which Cloud Run s
 
 | `event` | When | Fields |
 |---|---|---|
-| `mcp_connect` | An assistant opens an MCP connection | `clientName`, `clientVersion`, `forwarding` |
+| `mcp_connect` | An assistant opens an MCP connection | `clientName`, `clientVersion` |
 | `sandbox_created` | A sandbox is created | `sandbox` |
 | `tool_call` | A tool is called | `tool`, `outcome` (`ok`, `refused` or `error`) |
 | `rest_call` | An application calls the REST address of a sandbox | `sandbox`, `method`, `resource`, `status` |
 | `rate_limited` | A request is refused by a limit | |
 
-Every entry also has `client`, the kind of assistant read from its User-Agent (`Claude`, `Codex`, `ChatGPT` or the program's name), and `caller`, a keyed hash of the caller's address and the date. `caller` lets distinct callers be counted for one day; it cannot be turned back into the address and changes at midnight UTC.
+Every entry also has `client`, the kind of assistant read from its User-Agent (`Claude`, `Codex`, `ChatGPT` or the program's name), `via`, how the request arrived (`hosting`, `direct`, `unrecognised` or `local`, explained under Monitoring), and `caller`, a keyed hash of the caller's address and the date. `caller` lets distinct callers be counted for one day; it cannot be turned back into the address and changes at midnight UTC.
 
 The log never holds the content of a request, a sandbox key, an address, or an identifier chosen by the developer. `test.mjs` checks that when `GATEWAY_LOG` names the file the gateway's output was redirected to.
 
@@ -62,15 +62,27 @@ gcloud logging read 'resource.labels.service_name="pmitz-mcp" AND jsonPayload.us
 Set up in the Google Cloud project `terpomo-pmitz-mcp`, from the files in [`monitoring/`](monitoring):
 
 - **Health check.** `Pmitz sandbox server` calls `https://pmitz-mcp.web.app/health` every minute from several regions.
-- **Alerts**, sent by email: `alert-down.json` when the health check fails from more than one region for two minutes, and `alert-abuse.json` when more than 200 requests are refused by a limit within five minutes.
-- **Counters** built from the usage log, one file each: `pmitz_sandboxes_created`, `pmitz_mcp_connects`, `pmitz_tool_calls`, `pmitz_rest_calls` and `pmitz_rate_limited`.
+- **Alerts**, sent by email: `alert-down.json` when the health check fails from more than one region for two minutes, `alert-abuse.json` when more than 200 requests are refused by a limit within five minutes, and `alert-unrecognised.json` when more than 20 connections in an hour name Firebase Hosting without coming from a machine of Google's own.
+- **Counters** built from the usage log, one file each: `pmitz_sandboxes_created`, `pmitz_mcp_connects`, `pmitz_tool_calls`, `pmitz_rest_calls`, `pmitz_rate_limited` and `pmitz_unrecognised_senders`.
 - **Dashboard** `Pmitz sandbox service` (`dashboard.json`): the counters by assistant, tool and outcome, all requests by response class, response time and the health check.
 
 To recreate them: `gcloud logging metrics create NAME --config-from-file monitoring/NAME.yaml`, `gcloud alpha monitoring policies create --policy-from-file monitoring/alert-down.json`, and `gcloud monitoring dashboards create --config-from-file monitoring/dashboard.json`.
 
 The number of distinct callers is not a counter. Read it from the usage log, for example the distinct `caller` values of `sandbox_created` for one day.
 
-A caller's address is taken from the first entry of `X-Forwarded-For`. Through `pmitz-mcp.web.app` that entry is set by Firebase Hosting and a caller cannot change it. Through the service's own `run.app` address a caller can send any value, so there the limit per address can be evaded; the limit on new sandboxes per hour for the whole service still applies.
+### Whose address a request is counted under
+
+The limits per address and the `caller` of the usage log need the caller's address, and a caller must not be able to choose it.
+
+- Google's front end appends the address of whoever connected to it as the last entry of `X-Forwarded-For`. A caller cannot change that entry.
+- Through `pmitz-mcp.web.app` that sender is a Firebase Hosting machine. Hosting discards any `X-Forwarded-For` the caller sent and puts the caller's address just before its own. The entry before the last is the caller (`via: hosting`).
+- Through the service's own `run.app` address the sender is the caller, and the earlier entries are whatever the caller chose to send. The last entry is the caller (`via: direct`).
+- The entry before the last is believed only when the request names Firebase Hosting and the last entry is a machine of Google's own: in Google's published list `goog.json` and not in `cloud.json`, the ranges its cloud customers use. The lists are loaded at start and once a day; six ranges where Hosting was seen are built in for when they cannot be loaded.
+- A request that names Firebase Hosting but does not come from such a machine is counted under its sender (`via: unrecognised`). That is either a forged request or a Hosting range missing from the lists; the alert in `alert-unrecognised.json` tells which by its volume.
+
+`test.mjs` sends each of these cases. Switching the `run.app` address off (`--no-default-url`) or making the service private both cut Firebase Hosting off as well; that was tried on a throwaway service on 2026-11-23.
+
+What is left: someone who can relay a request through another Google service that sends from Google's own machines and lets them set `X-Forwarded-For` and `Via`. The limit on new sandboxes per hour for the whole service applies to them like to everyone.
 
 ## Deployment
 

@@ -22,6 +22,7 @@
 
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
+import { BlockList, isIP } from 'node:net';
 import pg from 'pg';
 
 import { createToolset, ToolError, SERVER_VERSION, GROUP_TYPES } from '../plugins/pmitz/server/pmitz-mcp.mjs';
@@ -93,7 +94,7 @@ function clientKind(userAgent) {
 
 // Stands for one caller for one day: a keyed hash of the address and the date. It lets distinct callers be
 // counted, cannot be turned back into the address, and changes at midnight UTC.
-function callerOf(address) {
+function callerHash(address) {
 	const day = new Date().toISOString().slice(0, 10);
 	return createHmac('sha256', settings.pmitzKey).update(`${day}:${address}`).digest('hex').slice(0, 12);
 }
@@ -102,23 +103,8 @@ function logUsage(event, context, fields = {}) {
 	console.log(JSON.stringify({
 		severity: 'INFO',
 		message: `usage ${event}`,
-		usage: { event, client: context.client, caller: context.caller, ...fields },
+		usage: { event, client: context.client, caller: context.caller, via: context.via, ...fields },
 	}));
-}
-
-// How the request was forwarded, without any address: how many hops X-Forwarded-For lists and which of the
-// headers that proxies add are present. Used to check which header carries the caller's address.
-function forwardingShape(request) {
-	const hops = String(request.headers['x-forwarded-for'] ?? '').split(',').map((hop) => hop.trim()).filter(Boolean);
-	const shape = { hops: hops.length };
-	for (const header of ['fastly-client-ip', 'x-fah-client-ip', 'x-appengine-user-ip', 'x-forwarded-host', 'forwarded', 'via']) {
-		const value = String(request.headers[header] ?? '').trim();
-		if (value) {
-			const position = hops.indexOf(value);
-			shape[header] = position >= 0 ? `hop ${position + 1}` : 'present';
-		}
-	}
-	return shape;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -627,9 +613,61 @@ async function callTool(name, args, context) {
 // HTTP
 // ---------------------------------------------------------------------------------------------
 
-function clientAddress(request) {
-	const forwarded = String(request.headers['x-forwarded-for'] ?? '').split(',')[0].trim();
-	return forwarded || request.socket.remoteAddress || 'unknown';
+// Who is calling. Google's front end appends the address of whoever connected to it as the last entry of
+// X-Forwarded-For, and a caller cannot change that entry. Through pmitz-mcp.web.app that sender is a Firebase
+// Hosting machine, which has put the caller's address just before its own and discarded anything the caller
+// sent. Through the service's own run.app address the sender is the caller, and the earlier entries are whatever
+// the caller chose to send. So the entry before the last is believed only when the last one is a machine of
+// Google's own, which no customer can send from.
+
+// Google publishes its address ranges (goog.json) and the ones its cloud customers use (cloud.json). Its own
+// machines are in the first list and not in the second. These six ranges are where Firebase Hosting was seen
+// on 2026-11-23, used until the published lists are loaded or if they cannot be.
+const googleRanges = { own: new BlockList(), customers: new BlockList() };
+for (const range of ['64.233.160.0/19', '66.102.0.0/20', '66.249.64.0/19', '74.125.0.0/16', '142.250.0.0/15', '192.178.0.0/15']) {
+	const [prefix, length] = range.split('/');
+	googleRanges.own.addSubnet(prefix, Number(length), 'ipv4');
+}
+
+async function loadGoogleRanges() {
+	const read = async (name) => {
+		const reply = await fetch(`https://www.gstatic.com/ipranges/${name}.json`, { signal: AbortSignal.timeout(5000) });
+		const list = new BlockList();
+		for (const entry of (await reply.json()).prefixes) {
+			const [prefix, length] = (entry.ipv4Prefix ?? entry.ipv6Prefix).split('/');
+			list.addSubnet(prefix, Number(length), entry.ipv4Prefix ? 'ipv4' : 'ipv6');
+		}
+		return list;
+	};
+	try {
+		const [own, customers] = await Promise.all([read('goog'), read('cloud')]);
+		googleRanges.own = own;
+		googleRanges.customers = customers;
+	}
+	catch (error) {
+		console.error(`could not load Google's address ranges, keeping the previous ones: ${error.message}`);
+	}
+}
+
+function isGoogleOwnMachine(address) {
+	const family = isIP(address) === 6 ? 'ipv6' : 'ipv4';
+	return isIP(address) !== 0 && googleRanges.own.check(address, family) && !googleRanges.customers.check(address, family);
+}
+
+// Returns the caller's address and how the request arrived: 'hosting' through pmitz-mcp.web.app, 'direct'
+// through the run.app address, 'unrecognised' when it names Firebase Hosting but did not come from a machine
+// of Google's own (a forged request, or a range missing from the lists), and 'local' with no proxy at all.
+function callerOf(request) {
+	const hops = String(request.headers['x-forwarded-for'] ?? '').split(',').map((hop) => hop.trim()).filter(Boolean);
+	if (hops.length === 0) {
+		return { address: request.socket.remoteAddress || 'unknown', via: 'local' };
+	}
+	const sender = hops.at(-1);
+	const namesHosting = /firebase hosting/i.test(String(request.headers.via ?? ''));
+	if (namesHosting && hops.length >= 2 && isGoogleOwnMachine(sender)) {
+		return { address: hops.at(-2), via: 'hosting' };
+	}
+	return { address: sender, via: namesHosting ? 'unrecognised' : 'direct' };
 }
 
 function readBody(request) {
@@ -684,7 +722,6 @@ async function handleRpc(message, context) {
 			logUsage('mcp_connect', context, {
 				clientName: String(params?.clientInfo?.name ?? '').slice(0, 60),
 				clientVersion: String(params?.clientInfo?.version ?? '').slice(0, 30),
-				forwarding: context.forwarding,
 			});
 			return result({
 				protocolVersion: SUPPORTED_PROTOCOL_VERSIONS.includes(requested) ? requested : SUPPORTED_PROTOCOL_VERSIONS[0],
@@ -807,17 +844,16 @@ const HOME_PAGE = `<!doctype html>
 </body></html>`;
 
 const server = createServer(async (request, response) => {
-	const address = clientAddress(request);
+	const { address, via } = callerOf(request);
 	const url = new URL(request.url ?? '/', 'http://localhost');
-	const context = { address };
+	const context = { address, via };
 	try {
 		if (url.pathname === '/health') {
 			sendText(response, 200, 'ok');
 			return;
 		}
 		context.client = clientKind(request.headers['user-agent']);
-		context.caller = callerOf(address);
-		context.forwarding = forwardingShape(request);
+		context.caller = callerHash(address);
 		if (!allow(`address:${address}`, LIMITS.requestsPerAddressPerMinute, 60 * 1000)) {
 			throw new Refusal(429, 'Too many requests. Wait a minute.');
 		}
@@ -867,6 +903,8 @@ if (!settings.pmitzKey || !settings.databaseUrl) {
 }
 
 await prepareStorage();
+await loadGoogleRanges();
+setInterval(loadGoogleRanges, 24 * 3600 * 1000).unref();
 server.listen(settings.port, () => {
 	console.log(`Pmitz hosted MCP listening on ${settings.port}, public address ${settings.publicUrl}`);
 });

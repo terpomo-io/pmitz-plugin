@@ -1,0 +1,11 @@
+description: "Requests to the Pmitz sandbox service that name Firebase Hosting but do not come from a machine of Google's own"
+filter: 'resource.type="cloud_run_revision" AND resource.labels.service_name="pmitz-mcp" AND jsonPayload.usage.via="unrecognised"'
+metricDescriptor:
+  metricKind: DELTA
+  valueType: INT64
+  unit: '1'
+  labels:
+  - key: client
+    valueType: STRING
+labelExtractors:
+  client: EXTRACT(jsonPayload.usage.client)
