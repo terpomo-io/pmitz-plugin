@@ -19,9 +19,8 @@
 //   OPENAI_APPS_CHALLENGE  Optional token served at /.well-known/openai-apps-challenge
 //   PORT                 Port to listen on (default 8090)
 //   SWEEP_SECONDS        Minimum time between two clean-ups of expired sandboxes (default 600)
-//   GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET
-//                        Optional. A GitHub OAuth app. When both are set, /mcp requires the user to sign in
-//                        with GitHub (see sign-in.mjs); when not, it needs no sign-in.
+//   GITHUB_CLIENT_ID     Optional. The client ID of a GitHub OAuth app with the device flow enabled. When set,
+//                        a user can sign in with GitHub to keep a sandbox longer (see sign-in.mjs).
 
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
@@ -41,7 +40,6 @@ const settings = {
 	port: Number(process.env.PORT ?? 8090),
 	sweepSeconds: Number(process.env.SWEEP_SECONDS ?? 600),
 	githubClientId: (process.env.GITHUB_CLIENT_ID ?? '').trim(),
-	githubClientSecret: (process.env.GITHUB_CLIENT_SECRET ?? '').trim(),
 	// Where GitHub is. Only a test points these elsewhere.
 	githubUrl: (process.env.GITHUB_URL ?? 'https://github.com').replace(/\/+$/, ''),
 	githubApiUrl: (process.env.GITHUB_API_URL ?? 'https://api.github.com').replace(/\/+$/, ''),
@@ -50,6 +48,8 @@ const settings = {
 // Limits. A sandbox is for development and testing, so they are deliberately small.
 const LIMITS = {
 	lifetimeHours: 72,
+	keptDays: 30,
+	keptSandboxesPerAccount: 5,
 	maxBodyBytes: 64 * 1024,
 	maxIdLength: 120,
 	maxProductsPerSandbox: 10,
@@ -200,7 +200,7 @@ function prefixOf(sandboxId) {
 	return `${sandboxId}--`;
 }
 
-async function createSandbox(address, ownerGithubId = null) {
+async function createSandbox(address) {
 	if (!allow(`create:${address}`, LIMITS.createsPerAddressPerHour, 3600 * 1000)
 			|| !allow('create:all', LIMITS.createsPerHour, 3600 * 1000)) {
 		throw new Refusal(429, 'Too many sandboxes were created recently. Try again in an hour.');
@@ -212,9 +212,9 @@ async function createSandbox(address, ownerGithubId = null) {
 	const id = randomToken(12, ID_ALPHABET);
 	const secret = randomToken(32, MIXED_ALPHABET);
 	const result = await pool.query(
-		`INSERT INTO gateway.sandbox (id, key_hash, expires_at, owner_github_id)
-		 VALUES ($1, $2, now() + make_interval(hours => $3), $4) RETURNING expires_at`,
-		[id, sha256(secret), LIMITS.lifetimeHours, ownerGithubId]);
+		`INSERT INTO gateway.sandbox (id, key_hash, expires_at)
+		 VALUES ($1, $2, now() + make_interval(hours => $3)) RETURNING expires_at`,
+		[id, sha256(secret), LIMITS.lifetimeHours]);
 	return { id, key: `pmz_${id}_${secret}`, expiresAt: result.rows[0].expires_at };
 }
 
@@ -226,7 +226,9 @@ async function authenticate(key, expectedId) {
 			+ 'returned once by pmitz_create_sandbox.');
 	}
 	const [, id, secret] = match;
-	const result = await pool.query('SELECT key_hash, expires_at, created_at FROM gateway.sandbox WHERE id = $1', [id]);
+	const result = await pool.query(
+		`SELECT s.key_hash, s.expires_at, s.created_at, a.login FROM gateway.sandbox s
+		 LEFT JOIN gateway.account a ON a.github_id = s.owner_github_id WHERE s.id = $1`, [id]);
 	const row = result.rows[0];
 	const given = Buffer.from(sha256(secret));
 	if (!row || !timingSafeEqual(given, Buffer.from(row.key_hash))) {
@@ -239,7 +241,7 @@ async function authenticate(key, expectedId) {
 	if (!allow(`sandbox:${id}`, LIMITS.requestsPerSandboxPerMinute, 60 * 1000)) {
 		throw new Refusal(429, 'Too many requests for this sandbox. Wait a minute.');
 	}
-	return { id, prefix: prefixOf(id), expiresAt: row.expires_at, createdAt: row.created_at };
+	return { id, prefix: prefixOf(id), expiresAt: row.expires_at, createdAt: row.created_at, user: row.login ?? null };
 }
 
 async function deleteSandboxData(sandboxId) {
@@ -501,6 +503,24 @@ function toolsetFor(sandbox) {
 	});
 }
 
+const signIn = createSignIn({ pool, settings, limits: LIMITS, allow, logUsage });
+
+const KEEP_TOOL = {
+	name: 'pmitz_keep_sandbox',
+	description: `Keeps a sandbox for ${LIMITS.keptDays} days instead of ${LIMITS.lifetimeHours} hours, for a user who signs in with `
+		+ 'GitHub. Optional: a sandbox works the same without it. Use it only when the user asks to keep a sandbox '
+		+ 'longer or to sign in. The first call returns a GitHub address and a short code: show both to the user. '
+		+ 'When the user says they entered the code, call it again with the same sandbox key. Only the public '
+		+ 'GitHub profile (username, name and company) is read.',
+	inputSchema: {
+		type: 'object',
+		properties: { sandbox: INSTANCE_PROPERTY },
+		required: ['sandbox'],
+		additionalProperties: false,
+	},
+	annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+};
+
 const OWN_TOOLS = [
 	{
 		name: 'pmitz_create_sandbox',
@@ -552,7 +572,7 @@ function sharedTools() {
 	}));
 }
 
-const ALL_TOOLS = [...OWN_TOOLS, ...sharedTools()];
+const ALL_TOOLS = [...OWN_TOOLS, ...(signIn.on ? [KEEP_TOOL] : []), ...sharedTools()];
 
 function describeSandbox(sandbox) {
 	return {
@@ -573,7 +593,7 @@ async function callTool(name, args, context) {
 	}
 	try {
 		if (name === 'pmitz_create_sandbox') {
-			const created = await createSandbox(context.address, context.account?.github_id ?? null);
+			const created = await createSandbox(context.address);
 			logUsage('sandbox_created', context, { sandbox: created.id });
 			return {
 				ok: true,
@@ -582,10 +602,15 @@ async function callTool(name, args, context) {
 				sandbox: created.key,
 				...describeSandbox({ id: created.id, expiresAt: created.expiresAt }),
 				forProduction: FOR_PRODUCTION,
+				...(signIn.on ? { keepLonger: `To keep it ${LIMITS.keptDays} days, the user can sign in with GitHub: pmitz_keep_sandbox.` } : {}),
 				next: 'Create a product with pmitz_create_product, then a subscription with pmitz_create_subscription.',
 			};
 		}
 		const sandbox = await authenticate(args.sandbox);
+		context.user = sandbox.user ?? undefined;
+		if (name === 'pmitz_keep_sandbox') {
+			return await signIn.keep(sandbox, context);
+		}
 		if (name === 'pmitz_sandbox_status') {
 			const products = await pool.query(
 				'SELECT product_id FROM gateway.product WHERE sandbox_id = $1 ORDER BY product_id', [sandbox.id]);
@@ -594,6 +619,7 @@ async function callTool(name, args, context) {
 			return {
 				ok: true,
 				...describeSandbox(sandbox),
+				...(sandbox.user ? { signedInAs: sandbox.user } : {}),
 				products: products.rows.map((row) => row.product_id),
 				subscriptions: subscriptions.rows[0].n,
 			};
@@ -796,7 +822,7 @@ function sendText(response, status, text, type = 'text/plain; charset=utf-8') {
 const CORS = {
 	'Access-Control-Allow-Origin': '*',
 	'Access-Control-Allow-Methods': 'POST, OPTIONS',
-	'Access-Control-Allow-Headers': 'Content-Type, Accept, Authorization, Mcp-Protocol-Version, Mcp-Session-Id',
+	'Access-Control-Allow-Headers': 'Content-Type, Accept, Mcp-Protocol-Version, Mcp-Session-Id',
 	'Access-Control-Max-Age': '86400',
 };
 
@@ -816,14 +842,13 @@ async function handleRpc(message, context) {
 			logUsage('mcp_connect', context, {
 				clientName: String(params?.clientInfo?.name ?? '').slice(0, 60),
 				clientVersion: String(params?.clientInfo?.version ?? '').slice(0, 30),
-				...(context.account ? { userName: context.account.name, company: context.account.company } : {}),
 			});
 			return result({
 				protocolVersion: SUPPORTED_PROTOCOL_VERSIONS.includes(requested) ? requested : SUPPORTED_PROTOCOL_VERSIONS[0],
 				capabilities: { tools: {} },
 				serverInfo: { name: 'pmitz-sandbox', title: 'Pmitz sandbox', version: SERVER_VERSION },
 				instructions: 'Gives the user a Pmitz sandbox to develop and test subscription plans, feature access and '
-					+ 'usage limits' + (signIn.on ? '' : ', with no account') + '. Call pmitz_create_sandbox once, show the user the sandbox key, '
+					+ 'usage limits, with no account. Call pmitz_create_sandbox once, show the user the sandbox key, '
 					+ 'and pass that key to every other tool. ' + NOTICE,
 			});
 		}
@@ -864,14 +889,6 @@ async function handleMcp(request, response, context) {
 		sendJson(response, 405, { error: 'Send MCP messages with POST.' }, { Allow: 'POST, OPTIONS', ...CORS });
 		return;
 	}
-	if (signIn.on) {
-		context.account = await signIn.userOf(request);
-		if (!context.account) {
-			signIn.challenge(response, CORS);
-			return;
-		}
-		context.user = context.account.login;
-	}
 	let payload;
 	try {
 		payload = JSON.parse(await readBody(request));
@@ -905,6 +922,7 @@ async function handleMcp(request, response, context) {
 
 async function handleRest(request, response, sandboxId, rest, context) {
 	const sandbox = await authenticate(request.headers['x-api-key'], sandboxId);
+	context.user = sandbox.user ?? undefined;
 	let body;
 	if (request.method === 'POST' || request.method === 'PATCH') {
 		const text = await readBody(request);
@@ -933,8 +951,6 @@ async function handleRest(request, response, sandboxId, rest, context) {
 	sendJson(response, result.status, result.body);
 }
 
-const signIn = createSignIn({ pool, settings, sha256, randomToken, allow, Refusal, logUsage, sendJson, readBody });
-
 const HOME_PAGE = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Pmitz sandbox</title>
@@ -942,7 +958,7 @@ const HOME_PAGE = `<!doctype html>
 </head><body>
 <h1>Pmitz sandbox</h1>
 <p>This is the hosted MCP server of <a href="https://terpomosoft.com/pmitz/">Pmitz</a>, the subscription-entitlement and usage-limit product from Terpomo Software.</p>
-<p>It gives an AI assistant a Pmitz sandbox to develop and test plans, feature access and usage limits${signIn.on ? '. You sign in with GitHub' : ', with no account'}. A sandbox is temporary: it is deleted ${LIMITS.lifetimeHours} hours after it is created and is not for production. Do not put personal or confidential information in it.</p>
+<p>It gives an AI assistant a Pmitz sandbox to develop and test plans, feature access and usage limits, with no account. A sandbox is temporary: it is deleted ${LIMITS.lifetimeHours} hours after it is created${signIn.on ? `, or ${LIMITS.keptDays} days if you sign in with GitHub,` : ''} and is not for production. Do not put personal or confidential information in it.</p>
 <p>MCP endpoint: <code>${settings.publicUrl}/mcp</code></p>
 <p>For production, run Pmitz yourself from the <a href="https://hub.docker.com/r/terpomo/pmitz-remoteserver">Docker image</a>, or <a href="https://terpomosoft.com/contact/">contact Terpomo Software</a> about Pmitz SaaS.</p>
 <p><a href="https://terpomosoft.com/terms/">Terms of service</a> · <a href="https://terpomosoft.com/privacy/">Privacy policy</a> · <a href="https://github.com/terpomo-io/pmitz-plugin">Source</a></p>
@@ -964,9 +980,6 @@ const server = createServer(async (request, response) => {
 			throw new Refusal(429, 'Too many requests. Wait a minute.');
 		}
 		sweepExpired();
-		if (await signIn.handle(request, response, url, context)) {
-			return;
-		}
 		if (url.pathname === '/mcp') {
 			await handleMcp(request, response, context);
 			return;

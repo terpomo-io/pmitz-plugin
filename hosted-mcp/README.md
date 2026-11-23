@@ -45,7 +45,7 @@ The gateway writes one JSON line per event to standard output, which Cloud Run s
 | `tool_call` | A tool is called | `tool`, `outcome` (`ok`, `refused` or `error`) |
 | `rest_call` | An application calls the REST address of a sandbox | `sandbox`, `method`, `resource`, `status` |
 | `rate_limited` | A request is refused by a limit | |
-| `signed_in` | A user signs in with GitHub (only with sign-in on) | `userName`, `company`, `firstTime` |
+| `signed_in` | A user signs in with GitHub to keep a sandbox | `sandbox`, `userName`, `company`, `firstTime` |
 
 Every entry also has:
 
@@ -58,7 +58,7 @@ Every entry also has:
 
 `network` and `country` come from the public-domain tables of [iptoasn.com](https://iptoasn.com), which the gateway downloads at start and once a day and searches in memory. No address is sent to anyone. Until the tables are loaded, and for an address with no public owner, both are `unknown`.
 
-With sign-in on, every MCP entry also has `user`, the GitHub username.
+Every entry about a sandbox whose user signed in also has `user`, the GitHub username.
 
 The log never holds the content of a request, a sandbox key, or an identifier chosen by the developer. `test.mjs` checks that when `GATEWAY_LOG` names the file the gateway's output was redirected to. Cloud Logging keeps the entries for 30 days.
 
@@ -77,16 +77,17 @@ gcloud logging read 'resource.labels.service_name="pmitz-mcp" AND jsonPayload.us
   --project terpomo-pmitz-mcp --freshness 7d --format 'value(timestamp, jsonPayload.usage.client, jsonPayload.usage.address, jsonPayload.usage.country, jsonPayload.usage.network)'
 ```
 
-## Sign-in with GitHub
+## Sign-in with GitHub (optional)
 
-Off by default: `/mcp` needs no sign-in. When the gateway is given a GitHub OAuth app in `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET`, `/mcp` answers 401 until the assistant has signed its user in, the way the MCP authorization specification describes: the assistant discovers the gateway's OAuth endpoints, registers itself, and opens a browser where the user confirms which assistant is connecting and then signs in at GitHub. [`sign-in.mjs`](sign-in.mjs) holds it and explains each step.
+A sandbox never needs a sign-in. When the gateway is given the client ID of a GitHub OAuth app in `GITHUB_CLIENT_ID`, it also offers the tool `pmitz_keep_sandbox`: a user who signs in with GitHub keeps their sandbox for 30 days instead of 72 hours, and the usage log then names them. Without `GITHUB_CLIENT_ID` the tool is not listed and nothing else changes.
 
-- The gateway asks GitHub for no permission. It reads the public profile (username, name, company), stores it in `gateway.account`, and does not keep GitHub's token.
-- A sandbox created while signed in is recorded under its user (`gateway.sandbox.owner_github_id`), and the usage log names the user.
-- The REST address of a sandbox is unchanged: an application authenticates with the sandbox key.
-- The OAuth app's callback address is `<PUBLIC_URL>/oauth/github/callback`.
+An assistant has no browser of its own, so this is GitHub's device flow. The first call of the tool returns GitHub's address and a short code for the user to enter in their own browser; the second call, once they have, signs them in. [`sign-in.mjs`](sign-in.mjs) holds it.
 
-`node test-sign-in.mjs` tests it against a stand-in for GitHub, with the same local stack as `test.mjs`: the whole sign-in, refresh, and what a hostile client must not be able to do.
+- The gateway asks GitHub for no permission. It reads the public profile (username, name, company), stores it in `gateway.account`, and does not keep GitHub's token. It needs no secret of the OAuth app.
+- The sandbox is recorded under its user (`gateway.sandbox.owner_github_id`). One account keeps at most five sandboxes.
+- The OAuth app needs "Enable Device Flow" ticked. Its callback address is not used; give it the service's address.
+
+`node test-sign-in.mjs` tests it against a stand-in for GitHub, with the same local stack as `test.mjs`.
 
 To see who signed in:
 
