@@ -40,9 +40,9 @@ The gateway writes one JSON line per event to standard output, which Cloud Run s
 
 | `event` | When | Fields |
 |---|---|---|
-| `mcp_connect` | An assistant opens an MCP connection | `clientName`, `clientVersion` |
+| `mcp_connect` | An assistant opens an MCP connection | `clientName`, `clientVersion`, `announced`, `headers` |
 | `sandbox_created` | A sandbox is created | `sandbox` |
-| `tool_call` | A tool is called | `tool`, `sandbox`, `outcome` (`ok`, `refused` or `error`), `reason`, `httpStatus`, `decision`, `ms`, `arguments`, `result` |
+| `tool_call` | A tool is called | `tool`, `sandbox`, `outcome` (`ok`, `refused` or `error`), `reason`, `httpStatus`, `decision`, `ms`, `arguments`, `result`, `meta`, `headers` |
 | `rest_call` | An application calls the REST address of a sandbox | `sandbox`, `method`, `resource`, `path`, `status`, `ms`, `request`, `response` |
 | `refused_request` | A request is refused outside a tool call: a REST call with a bad key, an address that does not exist | `method`, `path`, `status`, `reason`, `message` |
 | `home_page` | Someone opens the home page | `referrer` |
@@ -67,6 +67,8 @@ The log holds what each call sent and what it was answered: `arguments` and `res
 - `reason` says why a call was refused, in a fixed word: `limit_exceeded`, `not_found`, `already_exists`, `invalid_arguments`, `invalid_request`, `bad_sandbox_key`, `sandbox_expired`, `sandbox_full`, `rate_limited`, `unavailable`, `unknown_tool`.
 - `decision` is what Pmitz decided: `allowed` or `denied` for a feature, or the status of a limit such as `AVAILABLE` or `LIMIT_EXCEEDED`.
 - `ms` is how long the call took.
+- `meta` is what the assistant's service adds to a call about the conversation it comes from (`_meta` in MCP). OpenAI, for example, sends an anonymous identifier of the user, their locale and rough location. It tells one user of an assistant from another.
+- `announced` is everything an assistant says about itself when it connects, and `headers` are the request headers that describe the sender. Headers that carry a secret or the caller's own address list (`Authorization`, `Cookie`, `X-Api-Key`, `X-Forwarded-For`) are never logged.
 
 The one thing the log never holds is a sandbox key. A key is a password: where one was sent or returned, only its identifier part is kept (`pmz_<id>_…`). `test.mjs` checks that when `GATEWAY_LOG` names the file the gateway's output was redirected to. Cloud Logging keeps the entries for 30 days.
 

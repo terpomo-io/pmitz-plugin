@@ -328,6 +328,7 @@ if (process.env.GATEWAY_LOG && !LIVE) {
 		});
 	};
 	const HOSTING = '1.1 Firebase Hosting';
+	await rpc('tools/call', { name: 'pmitz_sandbox_status', arguments: { sandbox: KEY }, _meta: { 'openai/subject': 'anonymous-user-1', 'openai/locale': 'en-CA' } });
 	// The gateway downloads the network tables after it starts; a caller's network is unknown until then.
 	for (let waited = 0; waited < 90 && !readFileSync(process.env.GATEWAY_LOG, 'utf8').includes('network tables loaded'); waited++) {
 		await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -359,6 +360,13 @@ if (process.env.GATEWAY_LOG && !LIVE) {
 	const restCall = of('rest_call').find((entry) => entry.method === 'POST' && entry.resource === 'subscriptions' && entry.request);
 	check('a REST call is logged with its path, what it sent and what it was answered',
 		typeof restCall?.path === 'string' && typeof restCall.request === 'object' && restCall.response !== undefined);
+	const connected = of('mcp_connect').find((entry) => entry.clientName === 'gateway-test');
+	check('a connection is logged with everything the assistant announced and the headers that describe it',
+		connected?.announced?.clientInfo?.name === 'gateway-test' && typeof connected?.headers?.['user-agent'] === 'string');
+	check('what the assistant\'s service says about the conversation is logged with the call',
+		of('tool_call').some((entry) => entry.meta?.['openai/subject'] === 'anonymous-user-1' && entry.meta['openai/locale'] === 'en-CA'));
+	check('no header that carries a secret is logged', events.every((entry) => !entry.headers
+		|| ['authorization', 'cookie', 'x-api-key', 'x-forwarded-for'].every((name) => !(name in entry.headers))));
 	check('a request refused outside a tool call is logged with why', of('refused_request').some((entry) => entry.status === 401 && entry.reason === 'bad_sandbox_key')
 		&& of('refused_request').some((entry) => entry.status === 404));
 	check('a tool call is logged with its sandbox and how long it took',

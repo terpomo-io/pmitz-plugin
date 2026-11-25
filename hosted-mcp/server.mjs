@@ -156,6 +156,20 @@ function forLog(value) {
 	return text.length <= LOGGED_CHARACTERS ? JSON.parse(text) : { cutAt: LOGGED_CHARACTERS, text: text.slice(0, LOGGED_CHARACTERS) };
 }
 
+// The headers of a request that say something about who sent it. Never the ones that carry a secret.
+const SECRET_HEADERS = /^(authorization|cookie|x-api-key|proxy-authorization|x-forwarded-for|forwarded|x-serverless-authorization)$/;
+const TRANSPORT_HEADERS = /^(host|connection|content-length|content-type|accept|accept-encoding|via|traceparent|x-cloud-trace-context|x-forwarded-proto|x-forwarded-host|x-fh-requested-host|x-client-data|cdn-loop|fastly-.*|x-timer|x-varnish|x-country-code|x-appengine-.*|sec-.*|cache-control|pragma|te|transfer-encoding|upgrade-insecure-requests)$/;
+
+function tellingHeaders(request) {
+	const kept = {};
+	for (const [name, value] of Object.entries(request.headers)) {
+		if (!SECRET_HEADERS.test(name) && !TRANSPORT_HEADERS.test(name)) {
+			kept[name] = String(value).slice(0, 300);
+		}
+	}
+	return kept;
+}
+
 function logUsage(event, context, fields = {}) {
 	console.log(JSON.stringify({
 		severity: 'INFO',
@@ -891,6 +905,8 @@ async function handleRpc(message, context) {
 			logUsage('mcp_connect', context, {
 				clientName: String(params?.clientInfo?.name ?? '').slice(0, 60),
 				clientVersion: String(params?.clientInfo?.version ?? '').slice(0, 30),
+				// Everything the assistant says about itself when it connects.
+				announced: forLog(params), headers: forLog(context.headers),
 			});
 			return result({
 				protocolVersion: SUPPORTED_PROTOCOL_VERSIONS.includes(requested) ? requested : SUPPORTED_PROTOCOL_VERSIONS[0],
@@ -916,6 +932,9 @@ async function handleRpc(message, context) {
 			const about = () => ({
 				tool, ...(tool === 'unknown' ? { asked: forLog(String(params?.name).slice(0, 80)) } : {}),
 				...(context.sandboxId ? { sandbox: context.sandboxId } : {}), ms: Date.now() - started, arguments: forLog(sent),
+				// What the assistant's service adds to a call about the conversation it comes from, for example
+				// OpenAI's anonymous user identifier, locale and rough location.
+				...(params?._meta ? { meta: forLog(params._meta) } : {}), headers: forLog(context.headers),
 			});
 			try {
 				const value = await callTool(params?.name, params?.arguments ?? {}, context);
@@ -1000,7 +1019,7 @@ async function handleRest(request, response, sandboxId, rest, context) {
 	const resource = /^\/([a-z-]{1,30})/.exec(rest)?.[1] ?? 'other';
 	logUsage('rest_call', context, {
 		sandbox: sandbox.id, method: request.method, resource, status: result.status, ms: Date.now() - started,
-		path: forLog(rest), request: forLog(body), response: forLog(result.body),
+		path: forLog(rest), request: forLog(body), response: forLog(result.body), headers: forLog(context.headers),
 	});
 	if (result.body === null || result.body === undefined) {
 		response.writeHead(result.status, { 'Cache-Control': 'no-store' });
@@ -1037,6 +1056,7 @@ const server = createServer(async (request, response) => {
 			return;
 		}
 		context.client = clientKind(request.headers['user-agent']);
+		context.headers = tellingHeaders(request);
 		context.caller = callerHash(address);
 		Object.assign(context, networkOf(address));
 		if (!allow(`address:${address}`, LIMITS.requestsPerAddressPerMinute, 60 * 1000)) {
@@ -1078,7 +1098,7 @@ const server = createServer(async (request, response) => {
 			// Everything refused outside a tool call: a REST call with a bad key or path, an address that does not exist.
 			if (context.caller) {
 				logUsage('refused_request', context, {
-					method: request.method, path: forLog(url.pathname.slice(0, 300)), status: error.status,
+					method: request.method, path: forLog(url.pathname.slice(0, 300)), status: error.status, headers: forLog(context.headers),
 					reason: refusalReason(error.status), message: forLog(error.message),
 				});
 			}
