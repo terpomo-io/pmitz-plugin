@@ -42,8 +42,10 @@ The gateway writes one JSON line per event to standard output, which Cloud Run s
 |---|---|---|
 | `mcp_connect` | An assistant opens an MCP connection | `clientName`, `clientVersion` |
 | `sandbox_created` | A sandbox is created | `sandbox` |
-| `tool_call` | A tool is called | `tool`, `outcome` (`ok`, `refused` or `error`) |
-| `rest_call` | An application calls the REST address of a sandbox | `sandbox`, `method`, `resource`, `status` |
+| `tool_call` | A tool is called | `tool`, `sandbox`, `outcome` (`ok`, `refused` or `error`), `reason`, `httpStatus`, `decision`, `ms`, `arguments`, `result` |
+| `rest_call` | An application calls the REST address of a sandbox | `sandbox`, `method`, `resource`, `path`, `status`, `ms`, `request`, `response` |
+| `refused_request` | A request is refused outside a tool call: a REST call with a bad key, an address that does not exist | `method`, `path`, `status`, `reason`, `message` |
+| `home_page` | Someone opens the home page | `referrer` |
 | `rate_limited` | A request is refused by a limit | |
 | `signed_in` | A user signs in with GitHub to keep a sandbox | `sandbox`, `userName`, `company`, `firstTime` |
 
@@ -60,7 +62,13 @@ Every entry also has:
 
 Every entry about a sandbox whose user signed in also has `user`, the GitHub username.
 
-The log never holds the content of a request, a sandbox key, or an identifier chosen by the developer. `test.mjs` checks that when `GATEWAY_LOG` names the file the gateway's output was redirected to. Cloud Logging keeps the entries for 30 days.
+The log holds what each call sent and what it was answered: `arguments` and `result` for a tool call, `request` and `response` for a REST call. A value longer than 8,000 characters is cut and marked.
+
+- `reason` says why a call was refused, in a fixed word: `limit_exceeded`, `not_found`, `already_exists`, `invalid_arguments`, `invalid_request`, `bad_sandbox_key`, `sandbox_expired`, `sandbox_full`, `rate_limited`, `unavailable`, `unknown_tool`.
+- `decision` is what Pmitz decided: `allowed` or `denied` for a feature, or the status of a limit such as `AVAILABLE` or `LIMIT_EXCEEDED`.
+- `ms` is how long the call took.
+
+The one thing the log never holds is a sandbox key. A key is a password: where one was sent or returned, only its identifier part is kept (`pmz_<id>_…`). `test.mjs` checks that when `GATEWAY_LOG` names the file the gateway's output was redirected to. Cloud Logging keeps the entries for 30 days.
 
 ### Who uses it
 
@@ -68,7 +76,7 @@ The log never holds the content of a request, a sandbox key, or an identifier ch
 node who.mjs        # the last 7 days; `node who.mjs 30` for 30
 ```
 
-prints one block per caller: who it is, when it was seen, from where, with which assistant, and what it did. A signed-in caller is shown by GitHub username, name and company. Any other caller is shown by who its address is registered to. The network in the log is often an internet provider; the internet registries (ARIN, RIPE and the others) also record who each block was assigned to, which can be the provider's customer, a company. `who.mjs` asks them, and the DNS for the host name. It runs on your machine with `gcloud` signed in, not in the service: the registries limit requests per sender, and the service shares its outgoing addresses with other Google Cloud customers.
+prints one block per caller: who it is, when it was seen, from where, with which assistant, and each call it made with how it ended and what it sent (`node who.mjs 7 all` for more than the first 30 calls). Calls that share a signed-in user, a sandbox or a block of neighbouring addresses are one caller. A signed-in caller is shown by GitHub username, name and company. Any other caller is shown by who its address is registered to. The network in the log is often an internet provider; the internet registries (ARIN, RIPE and the others) also record who each block was assigned to, which can be the provider's customer, a company. `who.mjs` asks them, and the DNS for the host name. It runs on your machine with `gcloud` signed in, not in the service: the registries limit requests per sender, and the service shares its outgoing addresses with other Google Cloud customers.
 
 To read the raw log:
 
@@ -100,7 +108,7 @@ SELECT login, name, company, first_seen, last_seen FROM gateway.account ORDER BY
 Set up in the Google Cloud project `terpomo-pmitz-mcp`, from the files in [`monitoring/`](monitoring):
 
 - **Health check.** `Pmitz sandbox server` calls `https://pmitz-mcp.web.app/health` every minute from several regions.
-- **Alerts**, sent by email: `alert-down.json` when the health check fails from more than one region for two minutes, `alert-abuse.json` when more than 200 requests are refused by a limit within five minutes, and `alert-unrecognised.json` when more than 20 connections in an hour name Firebase Hosting without coming from a machine of Google's own.
+- **Alerts**, sent by email: `alert-down.json` when the health check fails from more than one region for two minutes, `alert-abuse.json` when more than 200 requests are refused by a limit within five minutes, and `alert-unrecognised.json` when more than 20 connections in an hour name Firebase Hosting without coming from a machine of Google's own, and `alert-used.json` when an assistant creates a sandbox, so that real use is noticed without looking (the gateway's own tests, which call as `node` or `curl`, do not count).
 - **Counters** built from the usage log, one file each: `pmitz_sandboxes_created`, `pmitz_mcp_connects`, `pmitz_tool_calls`, `pmitz_rest_calls`, `pmitz_rate_limited` and `pmitz_unrecognised_senders`.
 - **Dashboard** `Pmitz sandbox service` (`dashboard.json`): the counters by assistant, tool and outcome, all requests by response class, response time and the health check.
 

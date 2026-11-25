@@ -84,7 +84,8 @@ class Refusal extends Error {
 // ---------------------------------------------------------------------------------------------
 
 // One JSON line per event on standard output, which Cloud Run stores as a structured log entry. It records
-// what was used and by which kind of assistant, never the content of a request, a sandbox key or an address.
+// who called, with which assistant, what each call sent and what it was answered. The one thing it never
+// holds is a sandbox key: a key is a password, so only the sandbox's identifier is kept.
 
 // Which assistant a request comes from, read from the name it sends in its User-Agent.
 function clientKind(userAgent) {
@@ -107,6 +108,52 @@ function clientKind(userAgent) {
 function callerHash(address) {
 	const day = new Date().toISOString().slice(0, 10);
 	return createHmac('sha256', settings.pmitzKey).update(`${day}:${address}`).digest('hex').slice(0, 12);
+}
+
+// Why a call was refused, as one of a few fixed words. The text of a refusal can quote what the caller sent,
+// so it is never logged.
+const REFUSAL_REASONS = {
+	400: 'invalid_request', 401: 'bad_sandbox_key', 404: 'not_found', 409: 'already_exists', 410: 'sandbox_expired',
+	413: 'too_large', 422: 'sandbox_full', 429: 'rate_limited', 503: 'unavailable',
+};
+
+function refusalReason(status) {
+	return REFUSAL_REASONS[status] ?? `http_${status}`;
+}
+
+// What a tool call led to, from the answer of the Pmitz server: its HTTP status, why it was refused, and the
+// decision Pmitz took (allowed or denied for a feature, or the status of a limit). All are fixed words of
+// Pmitz or of this gateway.
+function resultSummary(value) {
+	const summary = {};
+	if (Number.isInteger(value?.httpStatus)) {
+		summary.httpStatus = value.httpStatus;
+	}
+	if (value?.ok === false) {
+		// From the Pmitz server, 422 means a limit would be exceeded. From this gateway it means the sandbox is full.
+		summary.reason = value.httpStatus === 422 ? 'limit_exceeded'
+			: Number.isInteger(value.httpStatus) ? refusalReason(value.httpStatus) : 'refused';
+	}
+	const result = value?.result;
+	if (typeof result?.featureAllowed === 'boolean') {
+		summary.decision = result.featureAllowed ? 'allowed' : 'denied';
+	}
+	else if (typeof result?.featureStatus === 'string' && /^[A-Z_]{1,40}$/.test(result.featureStatus)) {
+		summary.decision = result.featureStatus;
+	}
+	return summary;
+}
+
+// What a call sent or was answered, made safe to log: the secret part of any sandbox key is removed, and a
+// value too large for one log entry is cut and marked.
+const LOGGED_CHARACTERS = 8000;
+
+function forLog(value) {
+	if (value === undefined) {
+		return undefined;
+	}
+	const text = (JSON.stringify(value) ?? 'null').replace(/pmz_([a-z0-9]{12})_[A-Za-z0-9]{32}/g, 'pmz_$1_…');
+	return text.length <= LOGGED_CHARACTERS ? JSON.parse(text) : { cutAt: LOGGED_CHARACTERS, text: text.slice(0, LOGGED_CHARACTERS) };
 }
 
 function logUsage(event, context, fields = {}) {
@@ -495,7 +542,7 @@ function toolsetFor(sandbox) {
 			}
 			catch (error) {
 				if (error instanceof Refusal) {
-					throw new ToolError(error.message);
+					throw Object.assign(new ToolError(error.message), { status: error.status });
 				}
 				throw error;
 			}
@@ -594,6 +641,7 @@ async function callTool(name, args, context) {
 	try {
 		if (name === 'pmitz_create_sandbox') {
 			const created = await createSandbox(context.address);
+			context.sandboxId = created.id;
 			logUsage('sandbox_created', context, { sandbox: created.id });
 			return {
 				ok: true,
@@ -607,6 +655,7 @@ async function callTool(name, args, context) {
 			};
 		}
 		const sandbox = await authenticate(args.sandbox);
+		context.sandboxId = sandbox.id;
 		context.user = sandbox.user ?? undefined;
 		if (name === 'pmitz_keep_sandbox') {
 			return await signIn.keep(sandbox, context);
@@ -643,7 +692,7 @@ async function callTool(name, args, context) {
 			if (error.status === 429) {
 				logUsage('rate_limited', context, {});
 			}
-			throw new ToolError(error.message);
+			throw Object.assign(new ToolError(error.message), { status: error.status });
 		}
 		throw error;
 	}
@@ -857,19 +906,29 @@ async function handleRpc(message, context) {
 		case 'tools/list':
 			return result({ tools: ALL_TOOLS });
 		case 'tools/call': {
-			// Only the names of real tools are logged, so nothing a caller types ends up in the log.
 			const tool = ALL_TOOLS.some((known) => known.name === params?.name) ? params.name : 'unknown';
+			const started = Date.now();
+			// One connection can carry several calls: what the previous one set does not apply to this one.
+			context.sandboxId = undefined;
+			context.user = undefined;
+			const { sandbox: _key, ...sent } = (params?.arguments && typeof params.arguments === 'object' && !Array.isArray(params.arguments))
+				? params.arguments : {};
+			const about = () => ({
+				tool, ...(tool === 'unknown' ? { asked: forLog(String(params?.name).slice(0, 80)) } : {}),
+				...(context.sandboxId ? { sandbox: context.sandboxId } : {}), ms: Date.now() - started, arguments: forLog(sent),
+			});
 			try {
 				const value = await callTool(params?.name, params?.arguments ?? {}, context);
-				logUsage('tool_call', context, { tool, outcome: value?.ok === false ? 'refused' : 'ok' });
+				logUsage('tool_call', context, { ...about(), outcome: value?.ok === false ? 'refused' : 'ok', ...resultSummary(value), result: forLog(value) });
 				return result(toolResult(value, value?.ok === false));
 			}
 			catch (error) {
 				if (error instanceof ToolError) {
-					logUsage('tool_call', context, { tool, outcome: 'refused' });
+					const reason = error.status ? refusalReason(error.status) : (tool === 'unknown' ? 'unknown_tool' : 'invalid_arguments');
+					logUsage('tool_call', context, { ...about(), outcome: 'refused', reason, result: forLog(error.message) });
 					return result(toolResult(error.message, true));
 				}
-				logUsage('tool_call', context, { tool, outcome: 'error' });
+				logUsage('tool_call', context, { ...about(), outcome: 'error', result: forLog(String(error?.message)) });
 				console.error(`unexpected error in ${params?.name}: ${error?.message}`);
 				return result(toolResult('The service hit an unexpected error.', true));
 			}
@@ -921,6 +980,7 @@ async function handleMcp(request, response, context) {
 }
 
 async function handleRest(request, response, sandboxId, rest, context) {
+	const started = Date.now();
 	const sandbox = await authenticate(request.headers['x-api-key'], sandboxId);
 	context.user = sandbox.user ?? undefined;
 	let body;
@@ -936,9 +996,12 @@ async function handleRest(request, response, sandboxId, rest, context) {
 		}
 	}
 	const result = await forward(sandbox, request.method, rest, body);
-	// The first path segment only: the rest holds the developer's own identifiers.
+	// The kind of resource, for the counters. The full path is logged next to it.
 	const resource = /^\/([a-z-]{1,30})/.exec(rest)?.[1] ?? 'other';
-	logUsage('rest_call', context, { sandbox: sandbox.id, method: request.method, resource, status: result.status });
+	logUsage('rest_call', context, {
+		sandbox: sandbox.id, method: request.method, resource, status: result.status, ms: Date.now() - started,
+		path: forLog(rest), request: forLog(body), response: forLog(result.body),
+	});
 	if (result.body === null || result.body === undefined) {
 		response.writeHead(result.status, { 'Cache-Control': 'no-store' });
 		response.end();
@@ -997,6 +1060,7 @@ const server = createServer(async (request, response) => {
 			return;
 		}
 		if (url.pathname === '/' && request.method === 'GET') {
+			logUsage('home_page', context, { referrer: forLog(String(request.headers.referer ?? '').slice(0, 300)) });
 			sendText(response, 200, HOME_PAGE, 'text/html; charset=utf-8');
 			return;
 		}
@@ -1010,6 +1074,13 @@ const server = createServer(async (request, response) => {
 		if (error instanceof Refusal) {
 			if (error.status === 429 && context.caller) {
 				logUsage('rate_limited', context, {});
+			}
+			// Everything refused outside a tool call: a REST call with a bad key or path, an address that does not exist.
+			if (context.caller) {
+				logUsage('refused_request', context, {
+					method: request.method, path: forLog(url.pathname.slice(0, 300)), status: error.status,
+					reason: refusalReason(error.status), message: forLog(error.message),
+				});
 			}
 			sendJson(response, error.status, { error: error.message });
 			return;

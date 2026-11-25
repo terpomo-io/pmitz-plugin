@@ -1,0 +1,35 @@
+{
+  "displayName": "Pmitz sandbox server: someone created a sandbox",
+  "documentation": {
+    "content": "An assistant created a Pmitz sandbox. To see who and what they did, run `node who.mjs 1` in hosted-mcp of the pmitz-plugin repository. Calls made as `node` or `curl`, which is how the gateway's own tests call, are not counted.",
+    "mimeType": "text/markdown"
+  },
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "A sandbox created by an assistant",
+      "conditionThreshold": {
+        "filter": "metric.type=\"logging.googleapis.com/user/pmitz_sandboxes_created\" AND resource.type=\"cloud_run_revision\" AND metric.labels.client!=\"node\" AND metric.labels.client!=\"curl\"",
+        "aggregations": [
+          {
+            "alignmentPeriod": "300s",
+            "perSeriesAligner": "ALIGN_SUM",
+            "crossSeriesReducer": "REDUCE_SUM"
+          }
+        ],
+        "comparison": "COMPARISON_GT",
+        "thresholdValue": 0,
+        "duration": "0s",
+        "trigger": {
+          "count": 1
+        }
+      }
+    }
+  ],
+  "notificationChannels": [
+    "projects/terpomo-pmitz-mcp/notificationChannels/11034162506586188963"
+  ],
+  "alertStrategy": {
+    "autoClose": "1800s"
+  }
+}

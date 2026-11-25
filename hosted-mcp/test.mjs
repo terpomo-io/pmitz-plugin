@@ -351,7 +351,30 @@ if (process.env.GATEWAY_LOG && !LIVE) {
 	check('tool calls are logged with their outcome',
 		of('tool_call').some((entry) => entry.tool === 'pmitz_create_product' && entry.outcome === 'ok')
 		&& of('tool_call').some((entry) => entry.outcome === 'refused'));
-	check('an unknown tool is logged without its name', of('tool_call').some((entry) => entry.tool === 'unknown'));
+	check('a call to a tool that does not exist is logged with the name that was asked', of('tool_call').some((entry) => entry.tool === 'unknown' && typeof entry.asked === 'string'));
+	const createdProduct = of('tool_call').find((entry) => entry.tool === 'pmitz_create_product' && entry.sandbox === ID && entry.outcome === 'ok');
+	check('a tool call is logged with what it sent and what it was answered',
+		typeof createdProduct?.arguments?.product?.productId === 'string' && createdProduct?.result?.ok === true
+		&& createdProduct.arguments.sandbox === undefined, JSON.stringify(createdProduct).slice(0, 300));
+	const restCall = of('rest_call').find((entry) => entry.method === 'POST' && entry.resource === 'subscriptions' && entry.request);
+	check('a REST call is logged with its path, what it sent and what it was answered',
+		typeof restCall?.path === 'string' && typeof restCall.request === 'object' && restCall.response !== undefined);
+	check('a request refused outside a tool call is logged with why', of('refused_request').some((entry) => entry.status === 401 && entry.reason === 'bad_sandbox_key')
+		&& of('refused_request').some((entry) => entry.status === 404));
+	check('a tool call is logged with its sandbox and how long it took',
+		of('tool_call').some((entry) => entry.tool === 'pmitz_create_product' && entry.sandbox === ID)
+		&& of('tool_call').every((entry) => Number.isInteger(entry.ms)));
+	check('every refused call says why, in a fixed word', of('tool_call').filter((entry) => entry.outcome === 'refused')
+		.every((entry) => /^[a-z_0-9]{3,30}$/.test(entry.reason ?? '')));
+	const reasons = new Set(of('tool_call').map((entry) => `${entry.tool}:${entry.reason}`));
+	check('a refusal names its cause: limit reached, unknown subscription, existing product, bad key, expired sandbox',
+		['pmitz_record_usage:limit_exceeded', 'pmitz_find_subscription:not_found', 'pmitz_create_product:already_exists',
+			'pmitz_sandbox_status:bad_sandbox_key', 'pmitz_sandbox_status:sandbox_expired', 'unknown:unknown_tool']
+			.every((reason) => reasons.has(reason)), [...reasons].join(' '));
+	check('the decision Pmitz took is logged',
+		of('tool_call').some((entry) => entry.tool === 'pmitz_verify_entitlement' && entry.decision === 'allowed')
+		&& of('tool_call').some((entry) => entry.tool === 'pmitz_verify_entitlement' && entry.decision === 'denied')
+		&& of('tool_call').some((entry) => entry.tool === 'pmitz_check_limits' && entry.decision === 'LIMIT_EXCEEDED'));
 	check('REST calls are logged by resource', of('rest_call').some((entry) => entry.resource === 'subscriptions' && entry.sandbox === ID && entry.status === 200));
 	check('refused bursts are logged', of('rate_limited').length > 0);
 	const seenAs = (name) => of('mcp_connect').find((entry) => entry.clientName === name) ?? {};
@@ -379,8 +402,10 @@ if (process.env.GATEWAY_LOG && !LIVE) {
 		seenAs('from-a-private-address').network === 'unknown' && seenAs('from-a-private-address').country === 'unknown');
 	check('every entry has an address, a network and a country', events.every((entry) => entry.address && entry.network && entry.country));
 	const text = lines.join('\n');
-	check('no sandbox key is logged', !text.includes(KEY) && !text.includes(KEY2) && !/pmz_[a-z0-9]{12}_/.test(text));
-	check('no identifier of the developer is logged', !text.includes('acme') && !text.includes('monthly-customer'));
+	// A key is a password. Its identifier part is logged, its secret part never is, even where the key was sent or returned.
+	check('no sandbox key is logged', !text.includes(KEY) && !text.includes(KEY2) && !/pmz_[a-z0-9]{12}_[A-Za-z0-9]{32}/.test(text)
+		&& !text.includes(KEY.split('_')[2]) && !text.includes(KEY2.split('_')[2]));
+	check('the internal Pmitz key is not logged', !text.includes(INTERNAL_KEY));
 }
 
 await db?.end();
