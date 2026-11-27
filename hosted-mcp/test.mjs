@@ -154,6 +154,21 @@ const ID = idOf(KEY);
 
 	check('product is created', (await call('pmitz_create_product', { sandbox: KEY, product })).data?.httpStatus === 200);
 	check('same product again is a conflict', (await call('pmitz_create_product', { sandbox: KEY, product })).data?.httpStatus === 409);
+	const malformed = await call('pmitz_create_product', { sandbox: KEY, product: {
+		productId: 'malformed',
+		features: [{ featureId: 'export', limits: [{ type: 'CalendarPeriodRateLimit', id: 'monthly', count: 3, period: 'MONTH' }] }],
+		plans: [{ planId: 'free', features: ['export'] }],
+	} });
+	check('a malformed product is refused with each wrong field named and an example',
+		malformed.isError && ['"quota"', '"periodicity"', '"includedFeatures"', 'Example of a valid product']
+			.every((part) => malformed.text.includes(part)), malformed.text.slice(0, 200));
+	const ignored = await call('pmitz_create_product', { sandbox: KEY, product: {
+		productId: 'ignored',
+		features: [{ featureId: 'export', limits: [{ type: 'CountLimit', id: 'exports', count: 2 }] }],
+		plans: [{ planId: 'pro', includedFeatures: ['export', 'missing'], limitsOverride: [{ type: 'CountLimit', id: 'other', count: 7 }] }],
+	} });
+	check('a plan that names a missing feature or limit is refused',
+		ignored.isError && ignored.text.includes('"missing"') && ignored.text.includes('"other"'), ignored.text.slice(0, 200));
 	check('subscription on pro is created',
 		(await call('pmitz_create_subscription', { sandbox: KEY, subscriptionId: 'acme', status: 'ACTIVE', plans: { reports: 'pro' } })).data?.httpStatus === 200);
 	check('subscription on free is created',

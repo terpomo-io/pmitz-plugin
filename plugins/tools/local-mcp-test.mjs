@@ -149,6 +149,17 @@ console.log('2. Default: all tools');
 	check('create product', !created.isError && created.data.httpStatus === 200, created.text.slice(0, 120));
 	const duplicate = await client.call('pmitz_create_product', { product });
 	check('duplicate product reports a conflict', duplicate.isError && duplicate.data.httpStatus === 409);
+	const malformed = await client.call('pmitz_create_product', { product: {
+		productId: PRODUCT + '-bad',
+		features: [{ featureId: 'export', limits: [{ type: 'CalendarPeriodRateLimit', id: 'monthly', count: 3, period: 'MONTH' }] }],
+		plans: [{ planId: 'free', features: ['export'] }],
+	} });
+	check('a malformed product is refused with each wrong field named and an example',
+		malformed.isError && ['"quota"', '"periodicity"', '"includedFeatures"', 'Example of a valid product']
+			.every((part) => malformed.text.includes(part)), malformed.text.slice(0, 200));
+	const format = tools.find((t) => t.name === 'pmitz_create_product').inputSchema.properties.product;
+	check('the product format is described in the tool', format.description.includes('"limitsOverride"')
+		&& format.properties.features.items.properties.limits.items.properties.type.enum.length === 2);
 	const sub = await client.call('pmitz_create_subscription', { subscriptionId: SUB, status: 'ACTIVE', plans: { [PRODUCT]: 'starter' } });
 	check('create subscription', !sub.isError && sub.data.httpStatus === 200, sub.text.slice(0, 120));
 	const viewer = await client.call('pmitz_create_subscription', { subscriptionId: SUB + '-viewer', status: 'ACTIVE', plans: { [PRODUCT]: 'viewer' } });

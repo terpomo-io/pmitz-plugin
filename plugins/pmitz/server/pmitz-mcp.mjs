@@ -19,12 +19,19 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
 const SERVER_NAME = 'pmitz';
-const SERVER_VERSION = '0.1.2';
+const SERVER_VERSION = '0.1.3';
 const SUPPORTED_PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const REQUEST_TIMEOUT_MS = 15000;
 const GROUP_TYPES = ['subscriptions', 'users', 'directory-groups'];
 const SUBSCRIPTION_STATUSES = ['TRIAL', 'TRIAL_ENDED', 'PENDING', 'ACTIVE', 'SUSPENDED', 'EXPIRED',
 	'PENDING_CANCELLATION', 'CANCELLED', 'TERMINATED', 'ENDED'];
+const LIMIT_TYPES = ['CountLimit', 'CalendarPeriodRateLimit'];
+const PERIODICITIES = ['HOUR', 'DAY', 'WEEK', 'MONTH', 'YEAR'];
+const PRODUCT_EXAMPLE = '{"productId":"reports","features":[{"featureId":"export","limits":['
+	+ '{"type":"CalendarPeriodRateLimit","id":"monthly-exports","quota":3,"periodicity":"MONTH"}]},'
+	+ '{"featureId":"audit-log","limits":[]}],"plans":[{"planId":"free","includedFeatures":["export"]},'
+	+ '{"planId":"pro","includedFeatures":["export","audit-log"],"limitsOverride":['
+	+ '{"type":"CalendarPeriodRateLimit","id":"monthly-exports","quota":100,"periodicity":"MONTH"}]}]}';
 
 // ---------------------------------------------------------------------------------------------
 // Configuration
@@ -113,6 +120,72 @@ const unitsProperty = {
 	additionalProperties: { type: 'integer', minimum: 1 },
 };
 
+const limitSchema = {
+	type: 'object',
+	description: 'One limit. A CountLimit is a total with no automatic reset and takes "count". A '
+		+ 'CalendarPeriodRateLimit resets every calendar period and takes "quota" and "periodicity".',
+	properties: {
+		type: { type: 'string', enum: LIMIT_TYPES, description: 'Kind of limit.' },
+		id: { type: 'string', description: 'Limit ID, unique within the product, for example "monthly-exports".' },
+		count: { type: 'integer', minimum: 1, description: 'CountLimit only: units allowed in total.' },
+		quota: { type: 'integer', minimum: 1, description: 'CalendarPeriodRateLimit only: units allowed per period.' },
+		periodicity: { type: 'string', enum: PERIODICITIES, description: 'CalendarPeriodRateLimit only: the period.' },
+		unit: { type: 'string', description: 'Optional label for what is counted, for example "exports".' },
+	},
+	required: ['type', 'id'],
+	additionalProperties: false,
+};
+const productSchema = {
+	type: 'object',
+	description: 'One product object. Example with a Free plan of 3 exports a month and a Pro plan of 100: '
+		+ PRODUCT_EXAMPLE,
+	properties: {
+		productId: { type: 'string', description: 'New product ID.' },
+		features: {
+			type: 'array',
+			description: 'The features of the product. Limits are defined here, once per feature.',
+			items: {
+				type: 'object',
+				properties: {
+					featureId: { type: 'string', description: 'Feature ID, unique within the product.' },
+					limits: {
+						type: 'array',
+						description: 'Default limits of the feature. Leave empty for a feature that is only on or off.',
+						items: limitSchema,
+					},
+				},
+				required: ['featureId'],
+				additionalProperties: false,
+			},
+		},
+		plans: {
+			type: 'array',
+			description: 'The plans a subscription can be on.',
+			items: {
+				type: 'object',
+				properties: {
+					planId: { type: 'string', description: 'Plan ID, unique within the product.' },
+					description: { type: 'string', description: 'Optional description of the plan.' },
+					includedFeatures: {
+						type: 'array',
+						description: 'Feature IDs this plan gives access to. A feature left out is not allowed.',
+						items: { type: 'string' },
+					},
+					limitsOverride: {
+						type: 'array',
+						description: 'Complete limit objects that replace, for this plan, the feature limit with the same id.',
+						items: limitSchema,
+					},
+				},
+				required: ['planId', 'includedFeatures'],
+				additionalProperties: false,
+			},
+		},
+	},
+	required: ['productId', 'features'],
+	additionalProperties: false,
+};
+
 const TOOLS = [
 	{
 		name: 'pmitz_connection_status',
@@ -162,15 +235,13 @@ const TOOLS = [
 		name: 'pmitz_create_product',
 		write: true,
 		destructive: false,
-		description: 'Creates a product with its features, limits and plans. Fails with a conflict if the product ID '
+		description: 'Creates a product with its features, limits and plans. Limits belong to features; a plan lists '
+			+ 'the features it includes and may override their limits. Fails with a conflict if the product ID '
 			+ 'already exists; there is no update, so changing a product means removing it and creating it again.',
 		inputSchema: {
 			type: 'object',
 			properties: {
-				product: {
-					type: 'object',
-					description: 'One product object with productId, features and plans, in the Pmitz catalog format.',
-				},
+				product: productSchema,
 			},
 			required: ['product'],
 			additionalProperties: false,
@@ -307,6 +378,163 @@ function requireUnits(args) {
 	return units;
 }
 
+// Pmitz ignores a field it does not know and answers a malformed product with a bare HTTP 400, so
+// the product is checked here and every problem is named before anything is sent.
+function unknownFields(object, allowed, where, problems, hints = {}) {
+	for (const field of Object.keys(object)) {
+		if (!allowed.includes(field)) {
+			problems.push(`${where} has an unknown field "${field}"`
+				+ (hints[field] ? `; ${hints[field]}` : `; its fields are ${allowed.join(', ')}`) + '.');
+		}
+	}
+}
+
+function isObject(value) {
+	return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isId(value) {
+	return typeof value === 'string' && value.trim() !== '';
+}
+
+function limitProblems(limit, where, problems) {
+	if (!isObject(limit)) {
+		problems.push(`${where} must be an object.`);
+		return;
+	}
+	if (!isId(limit.id)) {
+		problems.push(`${where} needs "id", a non-empty string.`);
+	}
+	if (!LIMIT_TYPES.includes(limit.type)) {
+		problems.push(`${where} needs "type", one of: ${LIMIT_TYPES.join(', ')}.`);
+		return;
+	}
+	const amount = limit.type === 'CountLimit' ? 'count' : 'quota';
+	const other = limit.type === 'CountLimit' ? 'quota' : 'count';
+	const allowed = limit.type === 'CountLimit'
+		? ['type', 'id', 'count', 'unit'] : ['type', 'id', 'quota', 'periodicity', 'unit'];
+	unknownFields(limit, allowed, where, problems, {
+		[other]: `a ${limit.type} takes "${amount}"`,
+		period: 'the field is "periodicity"',
+		periodicity: 'only a CalendarPeriodRateLimit has a period',
+		limitId: 'the field is "id"',
+		limit: `the field is "${amount}"`,
+		value: `the field is "${amount}"`,
+	});
+	if (!Number.isInteger(limit[amount]) || limit[amount] < 1) {
+		problems.push(`${where} needs "${amount}", a positive integer.`);
+	}
+	if (limit.type === 'CalendarPeriodRateLimit' && !PERIODICITIES.includes(limit.periodicity)) {
+		problems.push(`${where} needs "periodicity", one of: ${PERIODICITIES.join(', ')}.`);
+	}
+	if (limit.unit !== undefined && typeof limit.unit !== 'string') {
+		problems.push(`${where}: "unit" must be a string.`);
+	}
+}
+
+function productProblems(product) {
+	const problems = [];
+	unknownFields(product, ['productId', 'features', 'plans'], 'The product', problems);
+	if (!isId(product.productId)) {
+		problems.push('The product needs "productId", a non-empty string.');
+	}
+	const featureIds = new Set();
+	const limitIds = new Set();
+	if (!Array.isArray(product.features)) {
+		problems.push('The product needs "features", an array of feature objects.');
+	}
+	for (const [index, feature] of (Array.isArray(product.features) ? product.features : []).entries()) {
+		const where = `features[${index}]`;
+		if (!isObject(feature)) {
+			problems.push(`${where} must be an object with "featureId" and "limits".`);
+			continue;
+		}
+		unknownFields(feature, ['featureId', 'limits'], where, problems);
+		if (!isId(feature.featureId)) {
+			problems.push(`${where} needs "featureId", a non-empty string.`);
+		}
+		else if (featureIds.has(feature.featureId)) {
+			problems.push(`${where} repeats the feature ID "${feature.featureId}".`);
+		}
+		featureIds.add(feature.featureId);
+		if (feature.limits !== undefined && !Array.isArray(feature.limits)) {
+			problems.push(`${where}: "limits" must be an array of limit objects.`);
+		}
+		for (const [limitIndex, limit] of (Array.isArray(feature.limits) ? feature.limits : []).entries()) {
+			limitProblems(limit, `${where}.limits[${limitIndex}]`, problems);
+			if (isObject(limit) && isId(limit.id)) {
+				if (limitIds.has(limit.id)) {
+					problems.push(`${where}.limits[${limitIndex}] repeats the limit ID "${limit.id}"; `
+						+ 'limit IDs are unique within a product.');
+				}
+				limitIds.add(limit.id);
+			}
+		}
+	}
+	if (product.plans !== undefined && !Array.isArray(product.plans)) {
+		problems.push('"plans" must be an array of plan objects.');
+	}
+	const planIds = new Set();
+	for (const [index, plan] of (Array.isArray(product.plans) ? product.plans : []).entries()) {
+		const where = `plans[${index}]`;
+		if (!isObject(plan)) {
+			problems.push(`${where} must be an object with "planId" and "includedFeatures".`);
+			continue;
+		}
+		unknownFields(plan, ['planId', 'description', 'includedFeatures', 'limitsOverride'], where, problems, {
+			features: 'the field is "includedFeatures", an array of feature IDs',
+			limits: 'the field is "limitsOverride"',
+			limitOverrides: 'the field is "limitsOverride"',
+			limitOverride: 'the field is "limitsOverride"',
+		});
+		if (!isId(plan.planId)) {
+			problems.push(`${where} needs "planId", a non-empty string.`);
+		}
+		else if (planIds.has(plan.planId)) {
+			problems.push(`${where} repeats the plan ID "${plan.planId}".`);
+		}
+		planIds.add(plan.planId);
+		if (plan.description !== undefined && typeof plan.description !== 'string') {
+			problems.push(`${where}: "description" must be a string.`);
+		}
+		if (!Array.isArray(plan.includedFeatures)) {
+			problems.push(`${where} needs "includedFeatures", an array of feature IDs (empty for none).`);
+		}
+		for (const featureId of (Array.isArray(plan.includedFeatures) ? plan.includedFeatures : [])) {
+			if (typeof featureId !== 'string') {
+				problems.push(`${where}: "includedFeatures" holds feature IDs as strings, not objects.`);
+			}
+			else if (!featureIds.has(featureId)) {
+				problems.push(`${where} includes "${featureId}", which is not a feature of this product.`);
+			}
+		}
+		if (plan.limitsOverride !== undefined && !Array.isArray(plan.limitsOverride)) {
+			problems.push(`${where}: "limitsOverride" must be an array of limit objects.`);
+		}
+		for (const [limitIndex, limit] of (Array.isArray(plan.limitsOverride) ? plan.limitsOverride : []).entries()) {
+			limitProblems(limit, `${where}.limitsOverride[${limitIndex}]`, problems);
+			if (isObject(limit) && isId(limit.id) && !limitIds.has(limit.id)) {
+				problems.push(`${where}.limitsOverride[${limitIndex}] overrides "${limit.id}", `
+					+ 'which is not the id of a limit of a feature of this product.');
+			}
+		}
+	}
+	return problems;
+}
+
+function requireProduct(args) {
+	const product = args.product;
+	if (!isObject(product)) {
+		throw new ToolError('"product" must be one product object, not an array. Example: ' + PRODUCT_EXAMPLE);
+	}
+	const problems = productProblems(product);
+	if (problems.length > 0) {
+		throw new ToolError('The product was not sent to Pmitz. ' + problems.slice(0, 12).join(' ')
+			+ ' Example of a valid product: ' + PRODUCT_EXAMPLE);
+	}
+	return product;
+}
+
 function subjectPath(args, operation) {
 	const groupType = requireEnum(args, 'groupType', GROUP_TYPES, 'subscriptions');
 	const segments = [groupType, requireId(args, 'groupId'), operation, requireId(args, 'productId'),
@@ -438,14 +666,11 @@ export function createToolset(context) {
 		},
 
 		async pmitz_create_product(args) {
-			const product = args.product;
-			if (product === null || typeof product !== 'object' || Array.isArray(product)) {
-				throw new ToolError('"product" must be one product object, not an array.');
-			}
-			requireId(product, 'productId');
+			const product = requireProduct(args);
 			const response = await callPmitz('POST', '/products', product);
 			return outcome(response, {
 				200: 'Product created.',
+				400: 'Pmitz rejected the product as malformed. Example of a valid product: ' + PRODUCT_EXAMPLE,
 				409: 'A product with this ID already exists. It was left unchanged.',
 			});
 		},
